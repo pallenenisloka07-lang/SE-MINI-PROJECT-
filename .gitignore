@@ -4,3 +4,9 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# Local development files
+*.db
+*.log
+__pycache__/
+*.py[cod]

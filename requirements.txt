@@ -1,0 +1,7 @@
+﻿fastapi
+uvicorn
+SQLAlchemy
+email-validator
+bcrypt
+python-jose[cryptography]
+httpx
