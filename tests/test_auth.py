@@ -1,11 +1,8 @@
-
 import unittest
 import uuid
+
 from fastapi.testclient import TestClient
-
 from src.main import app
-
-client = TestClient(app)
 
 
 class TestRegistration(unittest.TestCase):
@@ -20,7 +17,13 @@ class TestRegistration(unittest.TestCase):
 
     def test_valid_registration(self):
         payload = self.unique_payload()
-        response = client.post("/api/auth/register", json=payload)
+
+        # Entering the context runs FastAPI startup handlers.
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/auth/register",
+                json=payload,
+            )
 
         self.assertEqual(response.status_code, 201, response.text)
         data = response.json()
@@ -32,15 +35,21 @@ class TestRegistration(unittest.TestCase):
     def test_duplicate_registration(self):
         payload = self.unique_payload()
 
-        first = client.post("/api/auth/register", json=payload)
-        second = client.post("/api/auth/register", json=payload)
+        with TestClient(app) as client:
+            first = client.post("/api/auth/register", json=payload)
+            second = client.post("/api/auth/register", json=payload)
 
         self.assertEqual(first.status_code, 201, first.text)
         self.assertEqual(second.status_code, 409, second.text)
 
     def test_weak_password(self):
         payload = self.unique_payload(password="weak")
-        response = client.post("/api/auth/register", json=payload)
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/auth/register",
+                json=payload,
+            )
 
         self.assertEqual(response.status_code, 400, response.text)
 
