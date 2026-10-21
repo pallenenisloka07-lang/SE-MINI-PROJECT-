@@ -13,9 +13,11 @@ venv/
 # Environment variables and secrets
 .env
 .env.*
-
-# Keep the example configuration file
 !.env.example
+
+# Local development files
+*.db
+*.log
 
 # Local SQLite database files
 storage/*.db
@@ -25,4 +27,3 @@ storage/*.db-*
 .pytest_cache/
 .coverage
 htmlcov/
-
