@@ -1,12 +1,29 @@
 
+# macOS files
+.DS_Store
+
+# Python cache files
 __pycache__/
 *.py[cod]
+
+# Virtual environments
 .venv/
 venv/
+
+# Environment variables and secrets
 .env
+.env.*
+!.env.example
 
 # Local development files
 *.db
 *.log
-__pycache__/
-*.py[cod]
+
+# Local SQLite database files
+storage/*.db
+storage/*.db-*
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
