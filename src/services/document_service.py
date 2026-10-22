@@ -1,6 +1,8 @@
+import logging
 import os
 import uuid
 import zipfile
+
 from io import BytesIO
 from pathlib import Path
 
@@ -10,7 +12,17 @@ from src.repositories.document_repository import (
     get_document,
     update_document,
     delete_document,
+    mark_document_uploaded,
+    mark_document_processing,
+    mark_document_processed,
+    mark_document_failed,
 )
+from src.services.text_extractor import (
+    extract_text,
+    TextExtractionError,
+)
+
+logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
@@ -33,23 +45,20 @@ def _validate_file(filename, content):
     if len(content) > MAX_FILE_SIZE:
         raise ValueError("The file must not exceed 10 MB")
 
-    if extension == ".pdf":
-        if not content.startswith(b"%PDF-"):
-            raise ValueError("The file content does not match PDF format")
+    if extension == ".pdf" and not content.startswith(b"%PDF-"):
+        raise ValueError("The file content does not match PDF format")
 
-    elif extension == ".docx":
+    if extension == ".docx":
         try:
             with zipfile.ZipFile(BytesIO(content)) as archive:
                 if "word/document.xml" not in archive.namelist():
-                    raise ValueError(
-                        "The file content does not match DOCX format"
-                    )
+                    raise ValueError("Invalid DOCX document")
         except (zipfile.BadZipFile, OSError) as exc:
             raise ValueError("Invalid DOCX file") from exc
 
-    elif extension == ".txt":
+    if extension == ".txt":
         if b"\x00" in content:
-            raise ValueError("The TXT file contains invalid binary data")
+            raise ValueError("The TXT file contains binary data")
         try:
             content.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
@@ -61,10 +70,18 @@ def _validate_file(filename, content):
 def _public_document(document):
     if document is None:
         return None
+
+    # Do not expose the internal storage path, owner ID or extracted text.
+    private_fields = {
+        "storage_path",
+        "owner_id",
+        "extracted_text",
+    }
+
     return {
         key: value
         for key, value in document.items()
-        if key not in {"storage_path", "owner_id"}
+        if key not in private_fields
     }
 
 
@@ -72,6 +89,7 @@ def upload_document(owner_id, filename, content, title=None):
     filename, extension = _validate_file(filename, content)
 
     selected_title = (title or "").strip() or filename
+
     if len(selected_title) > 255:
         raise ValueError("Title must not exceed 255 characters")
 
@@ -100,12 +118,57 @@ def upload_document(owner_id, filename, content, title=None):
     return _public_document(document)
 
 
+def process_document(document_id, owner_id):
+    """Process a stored document after the upload response is prepared."""
+    document = get_document(document_id, owner_id)
+
+    if document is None:
+        return
+
+    try:
+        mark_document_processing(document_id, owner_id)
+
+        path = Path(document["storage_path"])
+        content = path.read_bytes()
+
+        extracted = extract_text(
+            document["original_filename"],
+            content,
+        )
+
+        mark_document_processed(
+            document_id,
+            owner_id,
+            extracted,
+        )
+
+    except TextExtractionError as exc:
+        mark_document_failed(document_id, owner_id, str(exc))
+
+    except OSError:
+        logger.exception("Stored document could not be read")
+        mark_document_failed(
+            document_id,
+            owner_id,
+            "The stored file could not be read. Please upload it again.",
+        )
+
+    except Exception:
+        logger.exception("Unexpected document-processing failure")
+        mark_document_failed(
+            document_id,
+            owner_id,
+            "Document processing failed unexpectedly.",
+        )
+
+
 def list_user_documents(owner_id, offset=0, limit=20):
     documents, total = list_documents(
         owner_id,
         offset=offset,
         limit=limit,
     )
+
     return {
         "items": [_public_document(d) for d in documents],
         "total": total,
@@ -116,17 +179,21 @@ def list_user_documents(owner_id, offset=0, limit=20):
 
 def get_user_document(owner_id, document_id):
     document = get_document(document_id, owner_id)
+
     if document is None:
         raise FileNotFoundError("Document not found")
+
     return _public_document(document)
 
 
 def get_download_info(owner_id, document_id):
     document = get_document(document_id, owner_id)
+
     if document is None:
         raise FileNotFoundError("Document not found")
 
     path = Path(document["storage_path"])
+
     if not path.is_file():
         raise FileNotFoundError("Stored document file is missing")
 
@@ -137,30 +204,55 @@ def edit_user_document(owner_id, document_id, updates):
     if not updates or not set(updates).issubset({"title", "category"}):
         raise ValueError("Provide a title or category to update")
 
+    updates = dict(updates)
+
     if "title" in updates:
         title = updates["title"]
+
         if not isinstance(title, str) or not title.strip():
             raise ValueError("Title cannot be empty")
+
         updates["title"] = title.strip()
+
         if len(updates["title"]) > 255:
             raise ValueError("Title must not exceed 255 characters")
 
-    if "category" in updates:
+    if "category" in updates and updates["category"] is not None:
         category = updates["category"]
-        if category is not None:
-            if not isinstance(category, str) or len(category) > 100:
-                raise ValueError("Category must not exceed 100 characters")
-            updates["category"] = category.strip() or None
+
+        if not isinstance(category, str) or len(category) > 100:
+            raise ValueError("Category must not exceed 100 characters")
+
+        updates["category"] = category.strip() or None
 
     document = update_document(document_id, owner_id, updates)
+
     if document is None:
         raise FileNotFoundError("Document not found")
+
     return _public_document(document)
 
 
 def delete_user_document(owner_id, document_id):
     document = delete_document(document_id, owner_id)
+
     if document is None:
         raise FileNotFoundError("Document not found")
 
     Path(document["storage_path"]).unlink(missing_ok=True)
+
+
+def queue_reprocessing(owner_id, document_id):
+    """Check ownership and reset a Processed/Failed document for reprocessing."""
+    document = get_document(document_id, owner_id)
+
+    if document is None:
+        raise FileNotFoundError("Document not found")
+
+    if document["processing_status"] not in {"Processed", "Failed"}:
+        raise ValueError(
+            "Only Processed or Failed documents can be reprocessed"
+        )
+
+    updated = mark_document_uploaded(document_id, owner_id)
+    return _public_document(updated)

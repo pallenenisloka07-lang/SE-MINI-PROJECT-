@@ -1,9 +1,18 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
-from sqlalchemy.orm import Session
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    inspect,
+)
 
-from src.repositories.user_repository import Base, SessionLocal
+from src.repositories.user_repository import Base, SessionLocal, engine
 
 
 class Document(Base):
@@ -21,19 +30,62 @@ class Document(Base):
     storage_path = Column(String(1024), nullable=False)
     file_type = Column(String(10), nullable=False)
     size_bytes = Column(Integer, nullable=False)
+
     category = Column(String(100), nullable=True)
+    category_confidence = Column(Float, nullable=True)
+    category_is_manual = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
     processing_status = Column(
         String(30),
         nullable=False,
-        default="Pending",
+        default="Uploaded",
     )
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    extracted_text = Column(Text, nullable=True)
+    processing_error = Column(Text, nullable=True)
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+    )
     updated_at = Column(
         DateTime,
         nullable=False,
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
     )
+
+
+def migrate_document_schema():
+    """Add new processing columns to an existing database table."""
+    inspector = inspect(engine)
+
+    if not inspector.has_table("documents"):
+        return
+
+    existing = {
+        column["name"]
+        for column in inspector.get_columns("documents")
+    }
+
+    additions = {
+        "extracted_text": "TEXT",
+        "processing_error": "TEXT",
+        "category_confidence": "FLOAT",
+        "category_is_manual": "BOOLEAN NOT NULL DEFAULT FALSE",
+    }
+
+    with engine.begin() as connection:
+        for name, definition in additions.items():
+            if name not in existing:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE documents ADD COLUMN "
+                    f"{name} {definition}"
+                )
 
 
 def _document_dict(document):
@@ -46,7 +98,11 @@ def _document_dict(document):
         "file_type": document.file_type,
         "size_bytes": document.size_bytes,
         "category": document.category,
+        "category_confidence": document.category_confidence,
+        "category_is_manual": document.category_is_manual,
         "processing_status": document.processing_status,
+        "extracted_text": document.extracted_text,
+        "processing_error": document.processing_error,
         "created_at": document.created_at,
         "updated_at": document.updated_at,
     }
@@ -68,7 +124,7 @@ def create_document(
             storage_path=storage_path,
             file_type=file_type,
             size_bytes=size_bytes,
-            processing_status="Pending",
+            processing_status="Uploaded",
         )
         db.add(document)
         db.commit()
@@ -81,13 +137,16 @@ def list_documents(owner_id, offset=0, limit=20):
         query = db.query(Document).filter(
             Document.owner_id == owner_id
         )
+
         total = query.count()
+
         documents = (
             query.order_by(Document.created_at.desc())
             .offset(offset)
             .limit(limit)
             .all()
         )
+
         return [_document_dict(d) for d in documents], total
 
 
@@ -101,6 +160,7 @@ def get_document(document_id, owner_id):
             )
             .first()
         )
+
         return _document_dict(document) if document else None
 
 
@@ -114,6 +174,7 @@ def update_document(document_id, owner_id, updates):
             )
             .first()
         )
+
         if document is None:
             return None
 
@@ -121,10 +182,83 @@ def update_document(document_id, owner_id, updates):
             if key in updates:
                 setattr(document, key, updates[key])
 
+                if key == "category":
+                    document.category_is_manual = True
+
         document.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(document)
+
         return _document_dict(document)
+
+
+def _update_processing_fields(document_id, owner_id, fields):
+    with SessionLocal() as db:
+        document = (
+            db.query(Document)
+            .filter(
+                Document.id == document_id,
+                Document.owner_id == owner_id,
+            )
+            .first()
+        )
+
+        if document is None:
+            return None
+
+        for key, value in fields.items():
+            setattr(document, key, value)
+
+        document.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(document)
+
+        return _document_dict(document)
+
+
+def mark_document_uploaded(document_id, owner_id):
+    return _update_processing_fields(
+        document_id,
+        owner_id,
+        {
+            "processing_status": "Uploaded",
+            "processing_error": None,
+        },
+    )
+
+
+def mark_document_processing(document_id, owner_id):
+    return _update_processing_fields(
+        document_id,
+        owner_id,
+        {
+            "processing_status": "Processing",
+            "processing_error": None,
+        },
+    )
+
+
+def mark_document_processed(document_id, owner_id, extracted_text):
+    return _update_processing_fields(
+        document_id,
+        owner_id,
+        {
+            "processing_status": "Processed",
+            "extracted_text": extracted_text,
+            "processing_error": None,
+        },
+    )
+
+
+def mark_document_failed(document_id, owner_id, reason):
+    return _update_processing_fields(
+        document_id,
+        owner_id,
+        {
+            "processing_status": "Failed",
+            "processing_error": str(reason)[:1000],
+        },
+    )
 
 
 def delete_document(document_id, owner_id):
@@ -137,10 +271,12 @@ def delete_document(document_id, owner_id):
             )
             .first()
         )
+
         if document is None:
             return None
 
         result = _document_dict(document)
         db.delete(document)
         db.commit()
+
         return result

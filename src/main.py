@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.documents import router as documents_router
 from src.api.auth import router as auth_router
 from src.repositories.user_repository import init_db
-
+from src.repositories.document_repository import migrate_document_schema
 app = FastAPI(
     title="AI-CMS API",
     description="AI-Powered Content Management System",
@@ -27,6 +27,7 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     init_db()
+    migrate_document_schema()
 
 
 app.include_router(auth_router)
