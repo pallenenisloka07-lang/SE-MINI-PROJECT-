@@ -27,6 +27,16 @@ from src.services.text_extractor import (
 
 from src.services.content_analyzer import analyze_document_text
 
+from src.services.embedding_service import (
+    split_into_passages,
+    encode_passages,
+)
+
+from src.services.vector_store_service import (
+    index_document_passages,
+    delete_document_index,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +55,7 @@ def _safe_filename(filename):
 
 
 def _validate_file(filename, content):
-    """Validate file type, content and size."""
+    """Validate extension, content and maximum file size."""
     filename = _safe_filename(filename)
     extension = Path(filename).suffix.lower()
 
@@ -76,7 +86,9 @@ def _validate_file(filename, content):
 
     elif extension == ".txt":
         if b"\x00" in content:
-            raise ValueError("The TXT file contains binary data")
+            raise ValueError(
+                "The TXT file contains binary data"
+            )
 
         try:
             content.decode("utf-8-sig")
@@ -89,7 +101,7 @@ def _validate_file(filename, content):
 
 
 def _public_document(document):
-    """Return safe document metadata, keywords and topics."""
+    """Return public metadata without exposing private fields."""
     if document is None:
         return None
 
@@ -109,8 +121,6 @@ def _public_document(document):
     except (ValueError, TypeError):
         result["topics"] = []
 
-    # Never expose internal file paths, owner IDs,
-    # extracted document contents or raw JSON fields.
     for field in (
         "storage_path",
         "owner_id",
@@ -124,13 +134,15 @@ def _public_document(document):
 
 
 def upload_document(owner_id, filename, content, title=None):
-    """Validate and save an uploaded document."""
+    """Validate and store an uploaded document."""
     filename, extension = _validate_file(filename, content)
 
     selected_title = (title or "").strip() or filename
 
     if len(selected_title) > 255:
-        raise ValueError("Title must not exceed 255 characters")
+        raise ValueError(
+            "Title must not exceed 255 characters"
+        )
 
     storage_dir = Path(
         os.getenv("DOCUMENT_STORAGE_PATH", "storage")
@@ -161,9 +173,32 @@ def upload_document(owner_id, filename, content, title=None):
         raise
 
 
+def _mark_processing_failed(document_id, owner_id, reason):
+    """Remove stale vectors and record a readable failure reason."""
+    try:
+        delete_document_index(document_id, owner_id)
+    except Exception:
+        logger.exception(
+            "Could not remove vector index for document %s",
+            document_id,
+        )
+
+    try:
+        mark_document_failed(
+            document_id,
+            owner_id,
+            str(reason),
+        )
+    except Exception:
+        logger.exception(
+            "Could not update failure status for document %s",
+            document_id,
+        )
+
+
 def process_document(document_id, owner_id):
     """
-    Extract text and analyse an uploaded document.
+    Extract and analyse a document, then index its passages.
 
     Status transitions:
     Uploaded -> Processing -> Processed or Failed
@@ -183,25 +218,47 @@ def process_document(document_id, owner_id):
             owner_id,
         )
 
-        path = Path(document["storage_path"])
-        content = path.read_bytes()
+        stored_path = Path(document["storage_path"])
+        content = stored_path.read_bytes()
 
+        # 1. Extract text.
         extracted = extract_text(
             document["original_filename"],
             content,
         )
 
-        # Generate category, confidence, keywords and topics.
+        # 2. Categorize and extract keywords and topics.
         analysis = analyze_document_text(extracted)
 
-        # Store the extracted text.
-        mark_document_processed(
-            document_id,
-            owner_id,
-            extracted,
+        # 3. Divide the extracted text into passages.
+        passages = split_into_passages(extracted)
+
+        if not passages:
+            raise TextExtractionError(
+                "No text passages could be generated "
+                "from the document."
+            )
+
+        # 4. Generate embeddings locally.
+        embeddings = encode_passages(passages)
+
+        if len(embeddings) != len(passages):
+            raise RuntimeError(
+                "Embedding count does not match passage count"
+            )
+
+        # 5. Replace the existing passage index.
+        # The vector service removes old vectors for this
+        # document before inserting the latest passages.
+        index_document_passages(
+            document_id=document_id,
+            owner_id=owner_id,
+            file_type=document["file_type"],
+            passages=passages,
+            embeddings=embeddings,
         )
 
-        # Persist the analysis results.
+        # 6. Store category, confidence, keywords and topics.
         save_analysis_results(
             document_id=document_id,
             owner_id=owner_id,
@@ -211,9 +268,19 @@ def process_document(document_id, owner_id):
             topics=analysis["topics"],
         )
 
-        logger.info(
-            "Document %s processed successfully",
+        # 7. Mark Processed only after the analysis and
+        # vector index have been created successfully.
+        mark_document_processed(
             document_id,
+            owner_id,
+            extracted,
+        )
+
+        logger.info(
+            "Document %s processed successfully; "
+            "%s passages indexed",
+            document_id,
+            len(passages),
         )
 
     except TextExtractionError as exc:
@@ -222,8 +289,7 @@ def process_document(document_id, owner_id):
             document_id,
             exc,
         )
-
-        mark_document_failed(
+        _mark_processing_failed(
             document_id,
             owner_id,
             str(exc),
@@ -234,11 +300,11 @@ def process_document(document_id, owner_id):
             "Stored file could not be read for document %s",
             document_id,
         )
-
-        mark_document_failed(
+        _mark_processing_failed(
             document_id,
             owner_id,
-            "The stored file could not be read. Please upload it again.",
+            "The stored file could not be read. "
+            "Please upload it again.",
         )
 
     except Exception:
@@ -246,16 +312,16 @@ def process_document(document_id, owner_id):
             "Unexpected processing failure for document %s",
             document_id,
         )
-
-        mark_document_failed(
+        _mark_processing_failed(
             document_id,
             owner_id,
-            "Document processing failed unexpectedly.",
+            "Document processing failed unexpectedly. "
+            "Please retry processing.",
         )
 
 
 def list_user_documents(owner_id, offset=0, limit=20):
-    """List documents belonging to a specific user."""
+    """List documents belonging to the authenticated user."""
     documents, total = list_documents(
         owner_id,
         offset=offset,
@@ -275,7 +341,10 @@ def list_user_documents(owner_id, offset=0, limit=20):
 
 def get_user_document(owner_id, document_id):
     """Get details for a document owned by the user."""
-    document = get_document(document_id, owner_id)
+    document = get_document(
+        document_id,
+        owner_id,
+    )
 
     if document is None:
         raise FileNotFoundError("Document not found")
@@ -284,8 +353,11 @@ def get_user_document(owner_id, document_id):
 
 
 def get_download_info(owner_id, document_id):
-    """Return the original file path and filename for download."""
-    document = get_document(document_id, owner_id)
+    """Return the original file path and filename."""
+    document = get_document(
+        document_id,
+        owner_id,
+    )
 
     if document is None:
         raise FileNotFoundError("Document not found")
@@ -301,7 +373,7 @@ def get_download_info(owner_id, document_id):
 
 
 def edit_user_document(owner_id, document_id, updates):
-    """Update a document title or manually assigned category."""
+    """Update a title or manually assigned category."""
     if not updates or not set(updates).issubset(
         {"title", "category"}
     ):
@@ -351,18 +423,41 @@ def edit_user_document(owner_id, document_id, updates):
 
 
 def delete_user_document(owner_id, document_id):
-    """Delete document metadata and its stored file."""
-    document = delete_document(document_id, owner_id)
+    """Delete the document, its vector index and stored file."""
+    document = get_document(
+        document_id,
+        owner_id,
+    )
 
     if document is None:
         raise FileNotFoundError("Document not found")
 
-    Path(document["storage_path"]).unlink(missing_ok=True)
+    # Remove search vectors first so a failed vector deletion
+    # does not silently leave a stale searchable document.
+    delete_document_index(
+        document_id,
+        owner_id,
+    )
+
+    deleted = delete_document(
+        document_id,
+        owner_id,
+    )
+
+    if deleted is None:
+        raise FileNotFoundError("Document not found")
+
+    Path(document["storage_path"]).unlink(
+        missing_ok=True
+    )
 
 
 def queue_reprocessing(owner_id, document_id):
     """Reset a processed or failed document for reprocessing."""
-    document = get_document(document_id, owner_id)
+    document = get_document(
+        document_id,
+        owner_id,
+    )
 
     if document is None:
         raise FileNotFoundError("Document not found")
@@ -372,8 +467,15 @@ def queue_reprocessing(owner_id, document_id):
         "Failed",
     }:
         raise ValueError(
-            "Only Processed or Failed documents can be reprocessed"
+            "Only Processed or Failed documents "
+            "can be reprocessed"
         )
+
+    # Remove old vectors before generating the new index.
+    delete_document_index(
+        document_id,
+        owner_id,
+    )
 
     updated = mark_document_uploaded(
         document_id,

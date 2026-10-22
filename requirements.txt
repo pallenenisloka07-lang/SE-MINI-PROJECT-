@@ -8,3 +8,5 @@ httpx
 python-multipart
 pypdf
 python-docx
+sentence-transformers
+chromadb
