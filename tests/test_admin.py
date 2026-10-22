@@ -1,3 +1,4 @@
+
 import unittest
 import uuid
 
@@ -5,9 +6,19 @@ from fastapi.testclient import TestClient
 
 from src.main import app
 from src.api.dependencies import get_current_user
+
 from src.repositories.admin_repository import (
     init_admin_tables,
     record_audit_event,
+    delete_category,
+)
+
+from src.repositories.document_repository import Document
+
+from src.repositories.user_repository import (
+    SessionLocal,
+    create_user,
+    User,
 )
 
 
@@ -43,9 +54,13 @@ class TestAdminAPI(unittest.TestCase):
             )
 
     def test_six_default_categories_exist(self):
-        response = self.client.get("/api/admin/categories")
+        response = self.client.get(
+            "/api/admin/categories"
+        )
 
-        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.status_code, 200, response.text
+        )
 
         names = {
             item["name"]
@@ -66,14 +81,18 @@ class TestAdminAPI(unittest.TestCase):
     def test_non_admin_cannot_view_categories(self):
         self.current_user["role"] = "user"
 
-        response = self.client.get("/api/admin/categories")
+        response = self.client.get(
+            "/api/admin/categories"
+        )
 
         self.assertEqual(response.status_code, 403)
 
     def test_non_admin_cannot_view_audit_logs(self):
         self.current_user["role"] = "user"
 
-        response = self.client.get("/api/admin/audit-logs")
+        response = self.client.get(
+            "/api/admin/audit-logs"
+        )
 
         self.assertEqual(response.status_code, 403)
 
@@ -84,7 +103,9 @@ class TestAdminAPI(unittest.TestCase):
             "/api/admin/categories",
             json={
                 "name": name,
-                "description": "A temporary category for API testing.",
+                "description": (
+                    "A temporary category for API testing."
+                ),
             },
         )
 
@@ -94,8 +115,13 @@ class TestAdminAPI(unittest.TestCase):
 
         category_id = created.json()["id"]
 
-        listing = self.client.get("/api/admin/categories")
-        self.assertEqual(listing.status_code, 200)
+        listing = self.client.get(
+            "/api/admin/categories"
+        )
+
+        self.assertEqual(
+            listing.status_code, 200, listing.text
+        )
 
         listed_names = {
             item["name"]
@@ -121,7 +147,9 @@ class TestAdminAPI(unittest.TestCase):
 
         payload = {
             "name": name,
-            "description": "Testing duplicate category handling.",
+            "description": (
+                "Testing duplicate category handling."
+            ),
         }
 
         first = self.client.post(
@@ -129,17 +157,23 @@ class TestAdminAPI(unittest.TestCase):
             json=payload,
         )
 
-        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(
+            first.status_code, 201, first.text
+        )
 
         second = self.client.post(
             "/api/admin/categories",
             json=payload,
         )
 
-        self.assertEqual(second.status_code, 409, second.text)
+        self.assertEqual(second.status_code, 409)
 
-        self.client.delete(
+        cleanup = self.client.delete(
             f"/api/admin/categories/{first.json()['id']}"
+        )
+
+        self.assertEqual(
+            cleanup.status_code, 200, cleanup.text
         )
 
     def test_audit_log_pagination(self):
@@ -155,7 +189,9 @@ class TestAdminAPI(unittest.TestCase):
             "/api/admin/audit-logs?page=1"
         )
 
-        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(
+            first.status_code, 200, first.text
+        )
 
         first_data = first.json()
 
@@ -167,7 +203,9 @@ class TestAdminAPI(unittest.TestCase):
             "/api/admin/audit-logs?page=2"
         )
 
-        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(
+            second.status_code, 200, second.text
+        )
 
         second_data = second.json()
 
@@ -183,12 +221,124 @@ class TestAdminAPI(unittest.TestCase):
             for item in second_data["items"]
         }
 
-        self.assertTrue(first_ids.isdisjoint(second_ids))
+        self.assertTrue(
+            first_ids.isdisjoint(second_ids)
+        )
 
         for item in first_data["items"]:
             self.assertIn("created_at", item)
             self.assertIn("action", item)
             self.assertIn("username", item)
+            self.assertIn("details", item)
+
+    def test_deleting_category_resets_existing_documents(self):
+        suffix = uuid.uuid4().hex[:8]
+        category_name = f"Delete Test {suffix}"
+
+        category_id = None
+        owner_id = None
+        document_id = None
+
+        try:
+            # 1. Create a temporary category using the API.
+            created = self.client.post(
+                "/api/admin/categories",
+                json={
+                    "name": category_name,
+                    "description": (
+                        "Temporary category for deletion testing."
+                    ),
+                },
+            )
+
+            self.assertEqual(
+                created.status_code, 201, created.text
+            )
+
+            category_id = created.json()["id"]
+
+            # 2. Create a separate user who owns a test document.
+            owner = create_user(
+                f"cat_owner_{suffix}",
+                f"cat_owner_{suffix}@example.com",
+                "test-password-hash",
+            )
+
+            owner_id = owner["id"]
+
+            # 3. Assign the document to the temporary category.
+            with SessionLocal() as db:
+                document = Document(
+                    owner_id=owner_id,
+                    title="Category deletion test document",
+                    original_filename="category_test.txt",
+                    storage_path="test-storage.txt",
+                    file_type="txt",
+                    size_bytes=10,
+                    category=category_name,
+                    category_confidence=0.95,
+                    category_is_manual=True,
+                    processing_status="Processed",
+                )
+
+                db.add(document)
+                db.commit()
+                db.refresh(document)
+
+                document_id = document.id
+
+            # 4. Delete the category through the admin API.
+            deleted = self.client.delete(
+                f"/api/admin/categories/{category_id}"
+            )
+
+            self.assertEqual(
+                deleted.status_code, 200, deleted.text
+            )
+
+            self.assertEqual(
+                deleted.json()["documents_reset"], 1
+            )
+
+            # 5. Verify the existing document was reset.
+            with SessionLocal() as db:
+                updated = db.get(Document, document_id)
+
+                self.assertIsNotNone(updated)
+                self.assertEqual(
+                    updated.category, "Uncategorized"
+                )
+                self.assertIsNone(
+                    updated.category_confidence
+                )
+                self.assertFalse(
+                    updated.category_is_manual
+                )
+
+        finally:
+            # Clean up only the test document and test user.
+            with SessionLocal() as db:
+                if document_id is not None:
+                    document = db.get(
+                        Document, document_id
+                    )
+
+                    if document is not None:
+                        db.delete(document)
+
+                if owner_id is not None:
+                    test_owner = db.get(
+                        User, owner_id
+                    )
+
+                    if test_owner is not None:
+                        db.delete(test_owner)
+
+                db.commit()
+
+            # Remove the category if an earlier assertion failed.
+            if category_id is not None:
+                delete_category(category_id)
 
 
 if __name__ == "__main__":
