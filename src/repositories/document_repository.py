@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from sqlalchemy import (
@@ -47,6 +48,9 @@ class Document(Base):
     extracted_text = Column(Text, nullable=True)
     processing_error = Column(Text, nullable=True)
 
+    keywords_json = Column(Text, nullable=True)
+    topics_json = Column(Text, nullable=True)
+
     created_at = Column(
         DateTime,
         nullable=False,
@@ -61,9 +65,10 @@ class Document(Base):
 
 
 def migrate_document_schema():
-    """Add new processing columns to an existing database table."""
-    inspector = inspect(engine)
+    """Create the table if needed and add missing columns."""
+    Base.metadata.create_all(bind=engine)
 
+    inspector = inspect(engine)
     if not inspector.has_table("documents"):
         return
 
@@ -77,6 +82,8 @@ def migrate_document_schema():
         "processing_error": "TEXT",
         "category_confidence": "FLOAT",
         "category_is_manual": "BOOLEAN NOT NULL DEFAULT FALSE",
+        "keywords_json": "TEXT",
+        "topics_json": "TEXT",
     }
 
     with engine.begin() as connection:
@@ -103,6 +110,8 @@ def _document_dict(document):
         "processing_status": document.processing_status,
         "extracted_text": document.extracted_text,
         "processing_error": document.processing_error,
+        "keywords_json": document.keywords_json,
+        "topics_json": document.topics_json,
         "created_at": document.created_at,
         "updated_at": document.updated_at,
     }
@@ -126,9 +135,11 @@ def create_document(
             size_bytes=size_bytes,
             processing_status="Uploaded",
         )
+
         db.add(document)
         db.commit()
         db.refresh(document)
+
         return _document_dict(document)
 
 
@@ -259,6 +270,42 @@ def mark_document_failed(document_id, owner_id, reason):
             "processing_error": str(reason)[:1000],
         },
     )
+
+
+def save_analysis_results(
+    document_id,
+    owner_id,
+    category,
+    confidence,
+    keywords,
+    topics,
+):
+    with SessionLocal() as db:
+        document = (
+            db.query(Document)
+            .filter(
+                Document.id == document_id,
+                Document.owner_id == owner_id,
+            )
+            .first()
+        )
+
+        if document is None:
+            return None
+
+        # Preserve a category manually chosen by the document owner.
+        if not document.category_is_manual:
+            document.category = category
+            document.category_confidence = confidence
+
+        document.keywords_json = json.dumps(keywords)
+        document.topics_json = json.dumps(topics)
+        document.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(document)
+
+        return _document_dict(document)
 
 
 def delete_document(document_id, owner_id):

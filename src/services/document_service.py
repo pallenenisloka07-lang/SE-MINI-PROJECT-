@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import uuid
@@ -16,11 +17,16 @@ from src.repositories.document_repository import (
     mark_document_processing,
     mark_document_processed,
     mark_document_failed,
+    save_analysis_results,
 )
+
 from src.services.text_extractor import (
     extract_text,
     TextExtractionError,
 )
+
+from src.services.content_analyzer import analyze_document_text
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,15 +35,24 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 
 
 def _safe_filename(filename):
-    return (filename or "").replace("\\", "/").split("/")[-1].strip()
+    """Remove directory components from an uploaded filename."""
+    return (
+        (filename or "")
+        .replace("\\", "/")
+        .split("/")[-1]
+        .strip()
+    )
 
 
 def _validate_file(filename, content):
+    """Validate file type, content and size."""
     filename = _safe_filename(filename)
     extension = Path(filename).suffix.lower()
 
     if not filename or extension not in ALLOWED_EXTENSIONS:
-        raise ValueError("Only PDF, DOCX and TXT files are supported")
+        raise ValueError(
+            "Only PDF, DOCX and TXT files are supported"
+        )
 
     if not content:
         raise ValueError("The uploaded file is empty")
@@ -45,10 +60,13 @@ def _validate_file(filename, content):
     if len(content) > MAX_FILE_SIZE:
         raise ValueError("The file must not exceed 10 MB")
 
-    if extension == ".pdf" and not content.startswith(b"%PDF-"):
-        raise ValueError("The file content does not match PDF format")
+    if extension == ".pdf":
+        if not content.startswith(b"%PDF-"):
+            raise ValueError(
+                "The file content does not match PDF format"
+            )
 
-    if extension == ".docx":
+    elif extension == ".docx":
         try:
             with zipfile.ZipFile(BytesIO(content)) as archive:
                 if "word/document.xml" not in archive.namelist():
@@ -56,36 +74,57 @@ def _validate_file(filename, content):
         except (zipfile.BadZipFile, OSError) as exc:
             raise ValueError("Invalid DOCX file") from exc
 
-    if extension == ".txt":
+    elif extension == ".txt":
         if b"\x00" in content:
             raise ValueError("The TXT file contains binary data")
+
         try:
             content.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
-            raise ValueError("The TXT file must use UTF-8 encoding") from exc
+            raise ValueError(
+                "The TXT file must use UTF-8 encoding"
+            ) from exc
 
     return filename, extension
 
 
 def _public_document(document):
+    """Return safe document metadata, keywords and topics."""
     if document is None:
         return None
 
-    # Do not expose the internal storage path, owner ID or extracted text.
-    private_fields = {
+    result = dict(document)
+
+    try:
+        result["keywords"] = json.loads(
+            result.get("keywords_json") or "[]"
+        )
+    except (ValueError, TypeError):
+        result["keywords"] = []
+
+    try:
+        result["topics"] = json.loads(
+            result.get("topics_json") or "[]"
+        )
+    except (ValueError, TypeError):
+        result["topics"] = []
+
+    # Never expose internal file paths, owner IDs,
+    # extracted document contents or raw JSON fields.
+    for field in (
         "storage_path",
         "owner_id",
         "extracted_text",
-    }
+        "keywords_json",
+        "topics_json",
+    ):
+        result.pop(field, None)
 
-    return {
-        key: value
-        for key, value in document.items()
-        if key not in private_fields
-    }
+    return result
 
 
 def upload_document(owner_id, filename, content, title=None):
+    """Validate and save an uploaded document."""
     filename, extension = _validate_file(filename, content)
 
     selected_title = (title or "").strip() or filename
@@ -96,9 +135,12 @@ def upload_document(owner_id, filename, content, title=None):
     storage_dir = Path(
         os.getenv("DOCUMENT_STORAGE_PATH", "storage")
     ).resolve()
+
     storage_dir.mkdir(parents=True, exist_ok=True)
 
-    stored_path = storage_dir / f"{uuid.uuid4().hex}{extension}"
+    stored_path = storage_dir / (
+        f"{uuid.uuid4().hex}{extension}"
+    )
 
     try:
         stored_path.write_bytes(content)
@@ -111,22 +153,35 @@ def upload_document(owner_id, filename, content, title=None):
             file_type=extension.lstrip("."),
             size_bytes=len(content),
         )
+
+        return _public_document(document)
+
     except Exception:
         stored_path.unlink(missing_ok=True)
         raise
 
-    return _public_document(document)
-
 
 def process_document(document_id, owner_id):
-    """Process a stored document after the upload response is prepared."""
+    """
+    Extract text and analyse an uploaded document.
+
+    Status transitions:
+    Uploaded -> Processing -> Processed or Failed
+    """
     document = get_document(document_id, owner_id)
 
     if document is None:
+        logger.warning(
+            "Document %s not found for processing",
+            document_id,
+        )
         return
 
     try:
-        mark_document_processing(document_id, owner_id)
+        mark_document_processing(
+            document_id,
+            owner_id,
+        )
 
         path = Path(document["storage_path"])
         content = path.read_bytes()
@@ -136,17 +191,50 @@ def process_document(document_id, owner_id):
             content,
         )
 
+        # Generate category, confidence, keywords and topics.
+        analysis = analyze_document_text(extracted)
+
+        # Store the extracted text.
         mark_document_processed(
             document_id,
             owner_id,
             extracted,
         )
 
+        # Persist the analysis results.
+        save_analysis_results(
+            document_id=document_id,
+            owner_id=owner_id,
+            category=analysis["category"],
+            confidence=analysis["confidence"],
+            keywords=analysis["keywords"],
+            topics=analysis["topics"],
+        )
+
+        logger.info(
+            "Document %s processed successfully",
+            document_id,
+        )
+
     except TextExtractionError as exc:
-        mark_document_failed(document_id, owner_id, str(exc))
+        logger.warning(
+            "Text extraction failed for document %s: %s",
+            document_id,
+            exc,
+        )
+
+        mark_document_failed(
+            document_id,
+            owner_id,
+            str(exc),
+        )
 
     except OSError:
-        logger.exception("Stored document could not be read")
+        logger.exception(
+            "Stored file could not be read for document %s",
+            document_id,
+        )
+
         mark_document_failed(
             document_id,
             owner_id,
@@ -154,7 +242,11 @@ def process_document(document_id, owner_id):
         )
 
     except Exception:
-        logger.exception("Unexpected document-processing failure")
+        logger.exception(
+            "Unexpected processing failure for document %s",
+            document_id,
+        )
+
         mark_document_failed(
             document_id,
             owner_id,
@@ -163,6 +255,7 @@ def process_document(document_id, owner_id):
 
 
 def list_user_documents(owner_id, offset=0, limit=20):
+    """List documents belonging to a specific user."""
     documents, total = list_documents(
         owner_id,
         offset=offset,
@@ -170,7 +263,10 @@ def list_user_documents(owner_id, offset=0, limit=20):
     )
 
     return {
-        "items": [_public_document(d) for d in documents],
+        "items": [
+            _public_document(document)
+            for document in documents
+        ],
         "total": total,
         "offset": offset,
         "limit": limit,
@@ -178,6 +274,7 @@ def list_user_documents(owner_id, offset=0, limit=20):
 
 
 def get_user_document(owner_id, document_id):
+    """Get details for a document owned by the user."""
     document = get_document(document_id, owner_id)
 
     if document is None:
@@ -187,6 +284,7 @@ def get_user_document(owner_id, document_id):
 
 
 def get_download_info(owner_id, document_id):
+    """Return the original file path and filename for download."""
     document = get_document(document_id, owner_id)
 
     if document is None:
@@ -195,14 +293,21 @@ def get_download_info(owner_id, document_id):
     path = Path(document["storage_path"])
 
     if not path.is_file():
-        raise FileNotFoundError("Stored document file is missing")
+        raise FileNotFoundError(
+            "Stored document file is missing"
+        )
 
     return path, document["original_filename"]
 
 
 def edit_user_document(owner_id, document_id, updates):
-    if not updates or not set(updates).issubset({"title", "category"}):
-        raise ValueError("Provide a title or category to update")
+    """Update a document title or manually assigned category."""
+    if not updates or not set(updates).issubset(
+        {"title", "category"}
+    ):
+        raise ValueError(
+            "Provide a title or category to update"
+        )
 
     updates = dict(updates)
 
@@ -215,17 +320,29 @@ def edit_user_document(owner_id, document_id, updates):
         updates["title"] = title.strip()
 
         if len(updates["title"]) > 255:
-            raise ValueError("Title must not exceed 255 characters")
+            raise ValueError(
+                "Title must not exceed 255 characters"
+            )
 
-    if "category" in updates and updates["category"] is not None:
+    if "category" in updates:
         category = updates["category"]
 
-        if not isinstance(category, str) or len(category) > 100:
-            raise ValueError("Category must not exceed 100 characters")
+        if category is not None:
+            if (
+                not isinstance(category, str)
+                or len(category) > 100
+            ):
+                raise ValueError(
+                    "Category must not exceed 100 characters"
+                )
 
-        updates["category"] = category.strip() or None
+            updates["category"] = category.strip() or None
 
-    document = update_document(document_id, owner_id, updates)
+    document = update_document(
+        document_id,
+        owner_id,
+        updates,
+    )
 
     if document is None:
         raise FileNotFoundError("Document not found")
@@ -234,6 +351,7 @@ def edit_user_document(owner_id, document_id, updates):
 
 
 def delete_user_document(owner_id, document_id):
+    """Delete document metadata and its stored file."""
     document = delete_document(document_id, owner_id)
 
     if document is None:
@@ -243,16 +361,23 @@ def delete_user_document(owner_id, document_id):
 
 
 def queue_reprocessing(owner_id, document_id):
-    """Check ownership and reset a Processed/Failed document for reprocessing."""
+    """Reset a processed or failed document for reprocessing."""
     document = get_document(document_id, owner_id)
 
     if document is None:
         raise FileNotFoundError("Document not found")
 
-    if document["processing_status"] not in {"Processed", "Failed"}:
+    if document["processing_status"] not in {
+        "Processed",
+        "Failed",
+    }:
         raise ValueError(
             "Only Processed or Failed documents can be reprocessed"
         )
 
-    updated = mark_document_uploaded(document_id, owner_id)
+    updated = mark_document_uploaded(
+        document_id,
+        owner_id,
+    )
+
     return _public_document(updated)
