@@ -7,6 +7,7 @@ from fastapi import (
     Response,
     status,
 )
+from jose import jwt
 from pydantic import BaseModel, EmailStr, Field
 
 from src.services.auth_service import (
@@ -14,6 +15,7 @@ from src.services.auth_service import (
     login_user,
     logout_user,
 )
+from src.repositories.admin_repository import record_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,19 @@ router = APIRouter(
     prefix="/api/auth",
     tags=["Authentication"],
 )
+
+
+def record_audit_safely(user_id, username, action, details):
+    """Audit events must never expose passwords or access tokens."""
+    try:
+        record_audit_event(
+            user_id=user_id,
+            username=username,
+            action=action,
+            details=details,
+        )
+    except Exception:
+        logger.exception("Failed to record audit event: %s", action)
 
 
 class RegisterRequest(BaseModel):
@@ -69,12 +84,36 @@ def register(request: RegisterRequest):
 @router.post("/login")
 def login(request: LoginRequest):
     try:
-        return login_user(
+        result = login_user(
             request.username,
             request.password,
         )
 
+        # This token was just issued by our own login service.
+        claims = jwt.get_unverified_claims(result["access_token"])
+
+        try:
+            user_id = int(claims["sub"])
+        except (KeyError, TypeError, ValueError):
+            user_id = None
+
+        record_audit_safely(
+            user_id,
+            claims.get("username", request.username),
+            "login_success",
+            "Login succeeded",
+        )
+
+        return result
+
     except PermissionError as exc:
+        record_audit_safely(
+            None,
+            request.username[:100],
+            "login_failure",
+            "Login rejected: invalid credentials",
+        )
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
@@ -103,18 +142,21 @@ def logout(
 
     scheme, separator, token = authorization.partition(" ")
 
-    if (
-        scheme.lower() != "bearer"
-        or not separator
-        or not token.strip()
-    ):
+    if scheme.lower() != "bearer" or not separator or not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authorization header",
         )
 
+    # Obtain claims for audit identification. The logout service must
+    # still validate the token before a successful logout is recorded.
     try:
-        logout_user(token.strip())
+        claims = jwt.get_unverified_claims(token)
+    except Exception:
+        claims = {}
+
+    try:
+        logout_user(token)
 
     except PermissionError as exc:
         raise HTTPException(
@@ -122,11 +164,16 @@ def logout(
             detail="Invalid or expired access token",
         ) from exc
 
-    except Exception as exc:
-        logger.exception("Logout endpoint failed")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Logout failed due to an internal error.",
-        ) from exc
+    try:
+        user_id = int(claims["sub"])
+    except (KeyError, TypeError, ValueError):
+        user_id = None
+
+    record_audit_safely(
+        user_id,
+        claims.get("username"),
+        "logout",
+        "Logout succeeded",
+    )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
