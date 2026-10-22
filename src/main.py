@@ -1,7 +1,7 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from src.api.documents import router as documents_router
 from src.api.auth import router as auth_router
 from src.repositories.user_repository import init_db
 
@@ -30,7 +30,7 @@ def startup():
 
 
 app.include_router(auth_router)
-
+app.include_router(documents_router)
 
 @app.get("/health")
 def health_check():
