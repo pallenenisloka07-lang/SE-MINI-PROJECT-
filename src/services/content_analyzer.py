@@ -2,47 +2,10 @@ import os
 import re
 from collections import Counter
 
+import numpy as np
+from sklearn.cluster import KMeans
 
-# These names must match the six default categories in admin_repository.py.
-CATEGORY_PROFILES = {
-    "Technology": {
-        "technology", "software", "computer", "programming",
-        "algorithm", "data", "database", "artificial",
-        "intelligence", "machine", "learning", "network",
-        "security", "cloud", "code", "api", "digital",
-        "cybersecurity",
-    },
-    "Business and Finance": {
-        "business", "company", "companies", "customer",
-        "marketing", "sales", "strategy", "revenue",
-        "product", "management", "market", "leadership",
-        "finance", "financial", "bank", "investment",
-        "budget", "accounting", "money", "tax", "credit",
-        "profit", "transaction", "commerce",
-    },
-    "Education": {
-        "education", "student", "school", "university",
-        "teacher", "course", "curriculum", "academic",
-        "assignment", "classroom", "exam", "study",
-        "teaching", "learning", "assessment",
-    },
-    "Health and Medicine": {
-        "health", "healthcare", "medical", "patient",
-        "doctor", "disease", "treatment", "hospital",
-        "clinical", "diagnosis", "medicine", "therapy",
-    },
-    "Law and Government": {
-        "legal", "law", "court", "contract", "regulation",
-        "compliance", "lawyer", "rights", "litigation",
-        "agreement", "policy", "statute", "government",
-        "legislation", "regulatory",
-    },
-    "Science and Research": {
-        "science", "scientific", "research", "experiment",
-        "physics", "chemistry", "biology", "hypothesis",
-        "laboratory", "scientist", "observation", "evidence",
-    },
-}
+from src.services.embedding_service import encode_passages
 
 
 STOPWORDS = set("""
@@ -56,86 +19,229 @@ your yours also document documents using use used based
 """.split())
 
 
-def extract_keywords(text, limit=10):
-    """Extract up to 10 informative words, ranked by frequency."""
-    words = re.findall(
+def _normalise(vector):
+    vector = np.asarray(vector, dtype=float)
+    norm = np.linalg.norm(vector)
+
+    if norm == 0:
+        return vector
+
+    return vector / norm
+
+
+def _candidate_phrases(text, limit=100):
+    """Build candidate single-word and two-word key phrases."""
+    tokens = re.findall(
         r"[a-zA-Z][a-zA-Z0-9'-]*",
         (text or "").lower(),
     )
 
-    counts = Counter()
+    tokens = [
+        token.strip("-'")
+        for token in tokens
+        if len(token.strip("-'")) >= 3
+        and token.strip("-'") not in STOPWORDS
+    ]
 
-    for word in words:
-        word = word.strip("-'")
+    counts = Counter(tokens)
 
-        if (
-            len(word) >= 3
-            and word not in STOPWORDS
-            and not word.isdigit()
-        ):
-            counts[word] += 1
+    for index in range(len(tokens) - 1):
+        phrase = f"{tokens[index]} {tokens[index + 1]}"
+        counts[phrase] += 1
 
-    ranked = sorted(
-        counts,
-        key=lambda word: (-counts[word], word),
-    )
-
-    return ranked[:max(1, min(limit, 10))]
+    return [
+        phrase
+        for phrase, _ in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:limit]
+    ]
 
 
-def categorize_text(text):
-    """Return an SRS category and a heuristic confidence score."""
-    words = set(
-        re.findall(
-            r"[a-zA-Z][a-zA-Z0-9'-]*",
-            (text or "").lower(),
-        )
-    )
+def _select_mmr(embeddings, relevance, limit=10, diversity_weight=0.3):
+    """Select relevant keywords while reducing near-duplicates."""
+    selected = []
+    remaining = set(range(len(relevance)))
 
-    scores = {
-        category: len(words.intersection(profile))
-        for category, profile in CATEGORY_PROFILES.items()
-    }
+    while remaining and len(selected) < limit:
+        best_index = None
+        best_score = float("-inf")
 
-    if not words or max(scores.values(), default=0) == 0:
-        return "Uncategorized", 0.0
+        for index in remaining:
+            if not selected:
+                score = relevance[index]
+            else:
+                diversity = max(
+                    float(np.dot(embeddings[index], embeddings[chosen]))
+                    for chosen in selected
+                )
+                score = (
+                    (1.0 - diversity_weight) * relevance[index]
+                    - diversity_weight * diversity
+                )
 
-    best_category = max(
-        scores,
-        key=lambda category: scores[category],
-    )
+            if score > best_score:
+                best_score = score
+                best_index = index
 
-    # This is a heuristic score, not a calibrated ML probability.
-    confidence = min(1.0, scores[best_category] / 3.0)
+        selected.append(best_index)
+        remaining.remove(best_index)
 
+    return selected
+
+
+def _get_threshold():
     try:
-        threshold = float(
+        value = float(
             os.getenv("CATEGORY_CONFIDENCE_THRESHOLD", "0.20")
         )
+        return max(-1.0, min(1.0, value))
     except ValueError:
-        threshold = 0.20
-
-    threshold = max(0.0, min(1.0, threshold))
-
-    if confidence < threshold:
-        return "Uncategorized", confidence
-
-    return best_category, confidence
+        return 0.20
 
 
-def analyze_document_text(text):
-    """Return category, confidence, keywords and topic labels."""
-    keywords = extract_keywords(text)
+def analyze_document_text(
+    text,
+    passage_embeddings=None,
+    categories=None,
+):
+    """
+    Analyse document text using the same embedding model as search.
 
-    category, confidence = categorize_text(text)
+    Returns category, similarity-based confidence, keywords and topics.
+    """
+    text = (text or "").strip()
 
-    # Starter topic extraction: select the leading keywords.
-    # Semantic grouping into topics remains a future improvement.
-    topics = keywords[:3]
+    if not text:
+        return {
+            "category": "Uncategorized",
+            "confidence": 0.0,
+            "keywords": [],
+            "topics": [],
+        }
+
+    # Use the embeddings already generated by document processing.
+    if passage_embeddings:
+        document_embedding = _normalise(
+            np.mean(
+                np.asarray(passage_embeddings, dtype=float),
+                axis=0,
+            )
+        )
+    else:
+        document_embedding = _normalise(
+            encode_passages([text])[0]
+        )
+
+    # Compare the document with database-managed category descriptions.
+    valid_categories = [
+        category
+        for category in (categories or [])
+        if category.get("name") and category.get("description")
+    ]
+
+    if valid_categories:
+        category_texts = [
+            f"{item['name']}: {item['description']}"
+            for item in valid_categories
+        ]
+
+        category_embeddings = np.asarray(
+            encode_passages(category_texts),
+            dtype=float,
+        )
+
+        category_scores = category_embeddings @ document_embedding
+
+        best_index = int(np.argmax(category_scores))
+        best_similarity = float(category_scores[best_index])
+
+        if best_similarity >= _get_threshold():
+            category_name = valid_categories[best_index]["name"]
+        else:
+            category_name = "Uncategorized"
+    else:
+        best_similarity = 0.0
+        category_name = "Uncategorized"
+
+    # Generate and embed candidate keywords/key phrases.
+    candidates = _candidate_phrases(text)
+
+    if not candidates:
+        return {
+            "category": category_name,
+            "confidence": max(0.0, best_similarity),
+            "keywords": [],
+            "topics": [],
+        }
+
+    candidate_embeddings = np.asarray(
+        encode_passages(candidates),
+        dtype=float,
+    )
+
+    relevance = candidate_embeddings @ document_embedding
+
+    # MMR-based selection of up to 10 keywords.
+    keyword_indices = _select_mmr(
+        candidate_embeddings,
+        relevance,
+        limit=10,
+    )
+
+    keywords = [
+        candidates[index]
+        for index in keyword_indices
+    ]
+
+    # Topics use the 15 most document-relevant candidate phrases.
+    ranked_indices = np.argsort(relevance)[::-1]
+    top_indices = ranked_indices[:15].tolist()
+
+    if len(top_indices) < 6:
+        topics = [
+            candidates[index]
+            for index in top_indices[:2]
+        ]
+    else:
+        topic_embeddings = candidate_embeddings[top_indices]
+        cluster_count = min(3, len(top_indices))
+
+        labels = KMeans(
+            n_clusters=cluster_count,
+            random_state=42,
+            n_init=10,
+        ).fit_predict(topic_embeddings)
+
+        topic_indices = []
+
+        for cluster in range(cluster_count):
+            members = [
+                top_indices[position]
+                for position, label in enumerate(labels)
+                if label == cluster
+            ]
+
+            if members:
+                representative = max(
+                    members,
+                    key=lambda index: relevance[index],
+                )
+                topic_indices.append(representative)
+
+        topic_indices.sort(
+            key=lambda index: relevance[index],
+            reverse=True,
+        )
+
+        topics = [
+            candidates[index]
+            for index in topic_indices[:3]
+        ]
 
     return {
-        "category": category,
-        "confidence": confidence,
+        "category": category_name,
+        "confidence": max(0.0, min(1.0, best_similarity)),
         "keywords": keywords,
         "topics": topics,
     }

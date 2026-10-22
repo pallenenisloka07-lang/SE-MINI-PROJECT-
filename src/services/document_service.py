@@ -1,3 +1,4 @@
+
 import json
 import logging
 import os
@@ -6,6 +7,8 @@ import zipfile
 
 from io import BytesIO
 from pathlib import Path
+
+from src.repositories.admin_repository import list_categories
 
 from src.repositories.document_repository import (
     create_document,
@@ -55,7 +58,7 @@ def _safe_filename(filename):
 
 
 def _validate_file(filename, content):
-    """Validate extension, content and maximum file size."""
+    """Validate extension, file content and maximum file size."""
     filename = _safe_filename(filename)
     extension = Path(filename).suffix.lower()
 
@@ -198,7 +201,7 @@ def _mark_processing_failed(document_id, owner_id, reason):
 
 def process_document(document_id, owner_id):
     """
-    Extract and analyse a document, then index its passages.
+    Extract, analyse and index a stored document.
 
     Status transitions:
     Uploaded -> Processing -> Processed or Failed
@@ -213,24 +216,23 @@ def process_document(document_id, owner_id):
         return
 
     try:
+        # 1. Update the processing status.
         mark_document_processing(
             document_id,
             owner_id,
         )
 
+        # 2. Read the stored file.
         stored_path = Path(document["storage_path"])
         content = stored_path.read_bytes()
 
-        # 1. Extract text.
+        # 3. Extract text from PDF, DOCX or TXT.
         extracted = extract_text(
             document["original_filename"],
             content,
         )
 
-        # 2. Categorize and extract keywords and topics.
-        analysis = analyze_document_text(extracted)
-
-        # 3. Divide the extracted text into passages.
+        # 4. Split extracted text into overlapping passages.
         passages = split_into_passages(extracted)
 
         if not passages:
@@ -239,7 +241,7 @@ def process_document(document_id, owner_id):
                 "from the document."
             )
 
-        # 4. Generate embeddings locally.
+        # 5. Generate semantic embeddings for the passages.
         embeddings = encode_passages(passages)
 
         if len(embeddings) != len(passages):
@@ -247,9 +249,18 @@ def process_document(document_id, owner_id):
                 "Embedding count does not match passage count"
             )
 
-        # 5. Replace the existing passage index.
-        # The vector service removes old vectors for this
-        # document before inserting the latest passages.
+        # 6. Analyse the document using its passage embeddings
+        # and the categories maintained by the administrator.
+        categories = list_categories()
+
+        analysis = analyze_document_text(
+            extracted,
+            passage_embeddings=embeddings,
+            categories=categories,
+        )
+
+        # 7. Index the passages for semantic search.
+        # Existing vectors for this document are replaced.
         index_document_passages(
             document_id=document_id,
             owner_id=owner_id,
@@ -258,7 +269,7 @@ def process_document(document_id, owner_id):
             embeddings=embeddings,
         )
 
-        # 6. Store category, confidence, keywords and topics.
+        # 8. Persist category, confidence, keywords and topics.
         save_analysis_results(
             document_id=document_id,
             owner_id=owner_id,
@@ -268,8 +279,7 @@ def process_document(document_id, owner_id):
             topics=analysis["topics"],
         )
 
-        # 7. Mark Processed only after the analysis and
-        # vector index have been created successfully.
+        # 9. Mark the document Processed after indexing and analysis.
         mark_document_processed(
             document_id,
             owner_id,
@@ -277,8 +287,7 @@ def process_document(document_id, owner_id):
         )
 
         logger.info(
-            "Document %s processed successfully; "
-            "%s passages indexed",
+            "Document %s processed successfully; %s passages indexed",
             document_id,
             len(passages),
         )
@@ -289,6 +298,7 @@ def process_document(document_id, owner_id):
             document_id,
             exc,
         )
+
         _mark_processing_failed(
             document_id,
             owner_id,
@@ -300,6 +310,7 @@ def process_document(document_id, owner_id):
             "Stored file could not be read for document %s",
             document_id,
         )
+
         _mark_processing_failed(
             document_id,
             owner_id,
@@ -312,6 +323,7 @@ def process_document(document_id, owner_id):
             "Unexpected processing failure for document %s",
             document_id,
         )
+
         _mark_processing_failed(
             document_id,
             owner_id,
@@ -373,7 +385,7 @@ def get_download_info(owner_id, document_id):
 
 
 def edit_user_document(owner_id, document_id, updates):
-    """Update a title or manually assigned category."""
+    """Update a document title or manually assigned category."""
     if not updates or not set(updates).issubset(
         {"title", "category"}
     ):
@@ -432,8 +444,7 @@ def delete_user_document(owner_id, document_id):
     if document is None:
         raise FileNotFoundError("Document not found")
 
-    # Remove search vectors first so a failed vector deletion
-    # does not silently leave a stale searchable document.
+    # Remove indexed passages before deleting the database record.
     delete_document_index(
         document_id,
         owner_id,
@@ -453,7 +464,7 @@ def delete_user_document(owner_id, document_id):
 
 
 def queue_reprocessing(owner_id, document_id):
-    """Reset a processed or failed document for reprocessing."""
+    """Reset a Processed or Failed document for reprocessing."""
     document = get_document(
         document_id,
         owner_id,
@@ -471,7 +482,7 @@ def queue_reprocessing(owner_id, document_id):
             "can be reprocessed"
         )
 
-    # Remove old vectors before generating the new index.
+    # Remove old vectors so reprocessing cannot leave duplicates.
     delete_document_index(
         document_id,
         owner_id,
