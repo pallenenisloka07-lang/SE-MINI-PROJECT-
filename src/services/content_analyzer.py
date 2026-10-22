@@ -2,42 +2,48 @@ import os
 import re
 from collections import Counter
 
-# Starter category profiles.
-# Replace these with your team's agreed six categories if different.
+
+# These names must match the six default categories in admin_repository.py.
 CATEGORY_PROFILES = {
     "Technology": {
         "technology", "software", "computer", "programming",
         "algorithm", "data", "database", "artificial",
         "intelligence", "machine", "learning", "network",
-        "security", "cloud", "code", "api", "document",
-        "processing", "system", "digital",
+        "security", "cloud", "code", "api", "digital",
+        "cybersecurity",
+    },
+    "Business and Finance": {
+        "business", "company", "companies", "customer",
+        "marketing", "sales", "strategy", "revenue",
+        "product", "management", "market", "leadership",
+        "finance", "financial", "bank", "investment",
+        "budget", "accounting", "money", "tax", "credit",
+        "profit", "transaction", "commerce",
     },
     "Education": {
         "education", "student", "school", "university",
         "teacher", "course", "curriculum", "academic",
         "assignment", "classroom", "exam", "study",
+        "teaching", "learning", "assessment",
     },
-    "Business": {
-        "business", "company", "customer", "marketing",
-        "sales", "strategy", "revenue", "product",
-        "management", "market", "organization", "leadership",
-    },
-    "Finance": {
-        "finance", "financial", "bank", "investment",
-        "budget", "accounting", "money", "tax", "payment",
-        "loan", "credit", "profit", "transaction",
-    },
-    "Health": {
+    "Health and Medicine": {
         "health", "healthcare", "medical", "patient",
         "doctor", "disease", "treatment", "hospital",
         "clinical", "diagnosis", "medicine", "therapy",
     },
-    "Legal": {
+    "Law and Government": {
         "legal", "law", "court", "contract", "regulation",
         "compliance", "lawyer", "rights", "litigation",
-        "agreement", "policy", "statute",
+        "agreement", "policy", "statute", "government",
+        "legislation", "regulatory",
+    },
+    "Science and Research": {
+        "science", "scientific", "research", "experiment",
+        "physics", "chemistry", "biology", "hypothesis",
+        "laboratory", "scientist", "observation", "evidence",
     },
 }
+
 
 STOPWORDS = set("""
 a an and are as at be been being by can could did do does
@@ -52,15 +58,22 @@ your yours also document documents using use used based
 
 def extract_keywords(text, limit=10):
     """Extract up to 10 informative words, ranked by frequency."""
-    words = re.findall(r"[a-zA-Z][a-zA-Z0-9'-]*", text.lower())
-
-    counts = Counter(
-        word.strip("-'")
-        for word in words
-        if len(word.strip("-'")) >= 3
-        and word.strip("-'") not in STOPWORDS
-        and not word.strip("-'").isdigit()
+    words = re.findall(
+        r"[a-zA-Z][a-zA-Z0-9'-]*",
+        (text or "").lower(),
     )
+
+    counts = Counter()
+
+    for word in words:
+        word = word.strip("-'")
+
+        if (
+            len(word) >= 3
+            and word not in STOPWORDS
+            and not word.isdigit()
+        ):
+            counts[word] += 1
 
     ranked = sorted(
         counts,
@@ -71,9 +84,12 @@ def extract_keywords(text, limit=10):
 
 
 def categorize_text(text):
-    """Choose the strongest category or Uncategorized."""
+    """Return an SRS category and a heuristic confidence score."""
     words = set(
-        re.findall(r"[a-zA-Z][a-zA-Z0-9'-]*", text.lower())
+        re.findall(
+            r"[a-zA-Z][a-zA-Z0-9'-]*",
+            (text or "").lower(),
+        )
     )
 
     scores = {
@@ -81,7 +97,7 @@ def categorize_text(text):
         for category, profile in CATEGORY_PROFILES.items()
     }
 
-    if not scores or max(scores.values(), default=0) == 0:
+    if not words or max(scores.values(), default=0) == 0:
         return "Uncategorized", 0.0
 
     best_category = max(
@@ -89,12 +105,16 @@ def categorize_text(text):
         key=lambda category: scores[category],
     )
 
-    # Simple heuristic confidence, not a calibrated ML probability.
+    # This is a heuristic score, not a calibrated ML probability.
     confidence = min(1.0, scores[best_category] / 3.0)
 
-    threshold = float(
-        os.getenv("CATEGORY_CONFIDENCE_THRESHOLD", "0.20")
-    )
+    try:
+        threshold = float(
+            os.getenv("CATEGORY_CONFIDENCE_THRESHOLD", "0.20")
+        )
+    except ValueError:
+        threshold = 0.20
+
     threshold = max(0.0, min(1.0, threshold))
 
     if confidence < threshold:
@@ -104,11 +124,13 @@ def categorize_text(text):
 
 
 def analyze_document_text(text):
-    """Produce category, confidence, keywords, and topic labels."""
+    """Return category, confidence, keywords and topic labels."""
     keywords = extract_keywords(text)
+
     category, confidence = categorize_text(text)
 
-    # Each topic is selected from the extracted key terms.
+    # Starter topic extraction: select the leading keywords.
+    # Semantic grouping into topics remains a future improvement.
     topics = keywords[:3]
 
     return {
