@@ -1,7 +1,12 @@
-fastapi
+﻿fastapi
 uvicorn
 SQLAlchemy>=2.0,<3.0
 email-validator
 bcrypt
 python-jose[cryptography]
 httpx
+python-multipart
+pypdf
+python-docx
+sentence-transformers
+chromadb
