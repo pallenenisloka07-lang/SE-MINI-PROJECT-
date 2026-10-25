@@ -1,52 +1,42 @@
-import os
+from fastapi import Depends, Header, HTTPException, status
 
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
-
-from src.repositories.user_repository import find_user_by_username
-
-bearer_scheme = HTTPBearer(auto_error=False)
+from src.services.auth_service import decode_access_token
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    authorization: str | None = Header(default=None),
 ):
-    if credentials is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    secret = os.getenv("JWT_SECRET_KEY")
-    if not secret:
-        raise HTTPException(status_code=500, detail="Authentication is not configured")
+    scheme, separator, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not separator or not token.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     try:
-        payload = jwt.decode(
-            credentials.credentials,
-            secret,
-            algorithms=["HS256"],
+        return decode_access_token(token.strip())
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid, expired, or revoked token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+def require_admin(
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role", "").lower() not in {"admin", "administrator"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required",
         )
-        subject = payload.get("sub")
-        username = payload.get("username")
-
-        if not subject or not username:
-            raise HTTPException(status_code=401, detail="Invalid access token")
-
-        user = find_user_by_username(username)
-        if (
-            user is None
-            or str(user.id) != str(subject)
-            or not user.is_active
-        ):
-            raise HTTPException(status_code=401, detail="Invalid access token")
-
-        return {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email.strip().lower(),
-            "role": user.role,
-        }
-
-    except HTTPException:
-        raise
-    except (JWTError, ValueError, TypeError):
-        raise HTTPException(status_code=401, detail="Invalid or expired access token")
+    return current_user
