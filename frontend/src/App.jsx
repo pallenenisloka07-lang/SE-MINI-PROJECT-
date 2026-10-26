@@ -47,7 +47,7 @@ function App() {
   )
 
   const [documents, setDocuments] = useState([])
-  
+  const [previewDocument, setPreviewDocument] = useState(null)
 const [sortOrder, setSortOrder] = useState('newest')
 const [currentPage, setCurrentPage] = useState(1)
 const pageSize = 5
@@ -304,6 +304,11 @@ async function downloadFile(file) {
     setDashboardMessage('')
     setDashboardError(false)
   }
+
+function openDocumentPreview(document) {
+  console.log('Preview clicked:', document)
+  setPreviewDocument(document)
+}
 
   async function saveDocument(event) {
     event.preventDefault()
@@ -713,6 +718,12 @@ async function downloadFile(file) {
                           <button className="secondary-button" onClick={() => openEditDocument(document)}>
                             Edit
                           </button>
+                          <button
+  className="secondary-button"
+  onClick={() => openDocumentPreview(document)}
+>
+  Preview
+</button>
                           <button className="delete-button" onClick={() => deleteDocument(document)}>
                             Delete
                           </button>
@@ -747,6 +758,23 @@ async function downloadFile(file) {
               </section>
             </>
           )}
+
+{previewDocument && (
+  <div className="preview-panel">
+    <div className="preview-header">
+      <h2>{previewDocument.title}</h2>
+      <button
+        className="secondary-button"
+        onClick={() => setPreviewDocument(null)}
+      >
+        Close Preview
+      </button>
+    </div>
+    <div className="preview-content">
+      <p>{previewDocument.content}</p>
+    </div>
+  </div>
+)}
 
           <footer className="dashboard-footer">
             AI-CMS · Your content, intelligently managed
