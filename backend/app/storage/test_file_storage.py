@@ -77,3 +77,40 @@ def test_get_file_rejects_absolute_paths(temporary_storage, tmp_path):
     with pytest.raises(ValueError, match="Invalid storage path"):
         file_storage.get_file(str(outside_file))
 
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload"),
+    [
+        ("renamed.pdf", b"MZ executable binary"),
+        ("renamed.docx", b"\x89PNG\r\n\x1a\n"),
+        ("binary.txt", b"text\x00binary"),
+        ("invalid-utf8.txt", b"\xff\xfe"),
+    ],
+)
+def test_save_file_rejects_extension_content_mismatch(
+    temporary_storage, filename, payload
+):
+    """FR-006 / SR-005 / TC-Doc-04: reject mismatches without saving."""
+    with pytest.raises(ValueError):
+        file_storage.save_file(payload, filename)
+    assert list(temporary_storage.iterdir()) == []
+
+
+def test_save_file_accepts_genuine_docx(temporary_storage):
+    """FR-006 / TC-Doc-01: a real DOCX is not rejected as binary data."""
+    from io import BytesIO
+    from docx import Document
+
+    output = BytesIO()
+    document = Document()
+    document.add_paragraph("A real DOCX document")
+    document.save(output)
+    stored = file_storage.save_file(output.getvalue(), "example.docx")
+    assert file_storage.get_file(stored).read_bytes() == output.getvalue()
+
+
+def test_save_file_strips_windows_directory_separators(temporary_storage):
+    """SR-005 / TC-Sec-07: paths never become storage filenames."""
+    saved = file_storage.save_file(b"safe text", r"C:\other\folder\notes.txt")
+    assert file_storage.get_file(saved).parent == temporary_storage
