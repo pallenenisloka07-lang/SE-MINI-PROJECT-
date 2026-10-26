@@ -49,6 +49,8 @@ function App() {
   const [documents, setDocuments] = useState([])
   const [documentsLoading, setDocumentsLoading] = useState(false)
   const [search, setSearch] = useState('')
+  const [semanticQuery, setSemanticQuery] = useState('')
+const [semanticResults, setSemanticResults] = useState([])
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [title, setTitle] = useState('')
@@ -155,6 +157,39 @@ function App() {
       setDocumentsLoading(false)
     }
   }
+
+  
+
+async function semanticSearch(query) {
+  if (query.trim().length < 3) {
+    setDashboardError(true)
+    setDashboardMessage('Please enter at least 3 characters to search.')
+    return
+  }
+
+  setDashboardMessage('')
+  setDashboardError(false)
+
+  try {
+    const params = new URLSearchParams({
+      q: query.trim(),
+      page: '1',
+    })
+
+    const data = await apiRequest(
+      `/api/search/semantic?${params.toString()}`
+    )
+
+    setSemanticResults(data.items || [])
+    setDashboardMessage(
+      `Found ${data.total ?? data.items?.length ?? 0} matching documents.`
+    )
+  } catch (err) {
+    setDashboardError(true)
+    setDashboardMessage(err.message)
+  }
+}
+
   async function loadUploadedFiles() {
   try {
     const data = await apiRequest('/api/documents')
@@ -500,9 +535,52 @@ async function downloadFile(file) {
                 </div>
               </section>
 
+<section className="content-panel semantic-search-panel">
+  <h2>AI Semantic Search</h2>
+  <p>Find documents by meaning, not just exact words.</p>
+
+  <form
+    onSubmit={(event) => {
+      event.preventDefault()
+      semanticSearch(semanticQuery)
+    }}
+  >
+    <input
+      value={semanticQuery}
+      onChange={(event) => setSemanticQuery(event.target.value)}
+      placeholder="Try: database relationships"
+      minLength={3}
+      required
+      aria-label="Semantic search query"
+    />
+    <button className="primary-button" type="submit">
+      Search by meaning
+    </button>
+  </form>
+
+  {semanticResults.length > 0 && (
+    <div className="document-list">
+      {semanticResults.map((result, index) => (
+        <article className="document-item" key={result.id ?? index}>
+          <div className="document-details">
+            <h3>
+              {result.title || result.original_filename || 'Untitled document'}
+            </h3>
+            <p>
+              {result.extracted_text || result.content || 'No preview available.'}
+            </p>
+          </div>
+        </article>
+      ))}
+    </div>
+  )}
+</section>
+
               <section className="content-panel">
                 <div className="panel-heading">
                   <div>
+
+
                     <h2>Your documents</h2>
                     <p>Search, edit, and organize your saved content.</p>
                   </div>
