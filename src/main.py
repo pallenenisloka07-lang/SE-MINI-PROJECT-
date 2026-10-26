@@ -12,19 +12,15 @@ from src.api.auth import router as auth_router
 from src.api.documents import router as documents_router
 from src.api.search import router as search_router
 from src.api.admin import router as admin_router
+from src.api.text_documents import router as text_documents_router
 from src.repositories.user_repository import init_db
 from src.repositories.document_repository import migrate_document_schema
 from src.repositories.admin_repository import init_admin_tables
-from src.api.text_documents import router as text_documents_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # A FastAPI lifespan handler replaces deprecated startup event handlers.
-    # Initialize both persistence layers and run their required migrations.
     init_db()
-    migrate_document_schema()
-    init_admin_tables()
     initialize_database()
     migrate_document_schema()
     init_admin_tables()
@@ -38,10 +34,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-<<<<<<< HEAD
-=======
 # Allow the React frontend to call the backend.
->>>>>>> origin/main
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -50,30 +43,17 @@ app.add_middleware(
         "http://localhost:5174",
     ],
     allow_credentials=False,
-    allow_methods=[
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "OPTIONS",
-    ],
-    allow_headers=[
-        "Content-Type",
-        "Authorization",
-    ],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
-<<<<<<< HEAD
-=======
-
 # Register each API router once.
->>>>>>> origin/main
 app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(search_router)
 app.include_router(admin_router)
 app.include_router(text_documents_router)
+
 
 @app.get("/health")
 def health_check():
