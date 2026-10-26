@@ -742,3 +742,17 @@
 .semantic-search-panel button {
   width: 100%;
 }
+
+.semantic-search-panel select {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  margin: 12px 0;
+  border: 1px solid #d9deeb;
+  border-radius: 10px;
+  background: #fff;
+  color: #20233f;
+  font-size: 16px;
+  cursor: pointer;
+}

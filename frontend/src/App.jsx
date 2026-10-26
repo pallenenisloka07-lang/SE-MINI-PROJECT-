@@ -50,6 +50,8 @@ function App() {
   const [documentsLoading, setDocumentsLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [semanticQuery, setSemanticQuery] = useState('')
+  const [semanticCategory, setSemanticCategory] = useState('')
+const [semanticFileType, setSemanticFileType] = useState('')
 const [semanticResults, setSemanticResults] = useState([])
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
@@ -160,6 +162,7 @@ const [semanticResults, setSemanticResults] = useState([])
 
   
 
+
 async function semanticSearch(query) {
   if (query.trim().length < 3) {
     setDashboardError(true)
@@ -176,6 +179,14 @@ async function semanticSearch(query) {
       page: '1',
     })
 
+    if (semanticCategory) {
+      params.set('category', semanticCategory)
+    }
+
+    if (semanticFileType) {
+      params.set('file_type', semanticFileType)
+    }
+
     const data = await apiRequest(
       `/api/search/semantic?${params.toString()}`
     )
@@ -189,6 +200,7 @@ async function semanticSearch(query) {
     setDashboardMessage(err.message)
   }
 }
+
 
   async function loadUploadedFiles() {
   try {
@@ -553,6 +565,27 @@ async function downloadFile(file) {
       required
       aria-label="Semantic search query"
     />
+    
+<select
+  value={semanticCategory}
+  onChange={(event) => setSemanticCategory(event.target.value)}
+  aria-label="Filter by category"
+>
+  <option value="">All categories</option>
+  <option value="Uncategorized">Uncategorized</option>
+</select>
+
+<select
+  value={semanticFileType}
+  onChange={(event) => setSemanticFileType(event.target.value)}
+  aria-label="Filter by file type"
+>
+  <option value="">All file types</option>
+  <option value="pdf">PDF</option>
+  <option value="docx">DOCX</option>
+  <option value="txt">TXT</option>
+</select>
+
     <button className="primary-button" type="submit">
       Search by meaning
     </button>
