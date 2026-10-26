@@ -47,6 +47,11 @@ function App() {
   )
 
   const [documents, setDocuments] = useState([])
+  
+const [sortOrder, setSortOrder] = useState('newest')
+const [currentPage, setCurrentPage] = useState(1)
+const pageSize = 5
+
   const [documentsLoading, setDocumentsLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [semanticQuery, setSemanticQuery] = useState('')
@@ -667,8 +672,36 @@ async function downloadFile(file) {
                     )}
                   </div>
                 ) : (
+                  <>
+                  
+<div className="document-toolbar">
+  <label htmlFor="document-sort">Sort documents:</label>
+  <select
+    id="document-sort"
+    value={sortOrder}
+    onChange={(event) => {
+      setSortOrder(event.target.value)
+      setCurrentPage(1)
+    }}
+  >
+    <option value="newest">Newest first</option>
+    <option value="oldest">Oldest first</option>
+    <option value="title">Title (A–Z)</option>
+  </select>
+</div>
+
                   <div className="document-list">
-                    {documents.map((document) => (
+                    {[...documents]
+  .sort((a, b) => {
+    if (sortOrder === 'title') {
+      return (a.title || '').localeCompare(b.title || '')
+    }
+    return sortOrder === 'newest'
+      ? Number(b.id) - Number(a.id)
+      : Number(a.id) - Number(b.id)
+  })
+  .slice((currentPage - 1) * pageSize, currentPage * pageSize)
+  .map((document) => (
                       <article className="document-item" key={document.id}>
                         <div className="document-symbol">▤</div>
                         <div className="document-details">
@@ -687,6 +720,29 @@ async function downloadFile(file) {
                       </article>
                     ))}
                   </div>
+                  
+<div className="pagination-controls">
+  <button
+    className="secondary-button"
+    disabled={currentPage === 1}
+    onClick={() => setCurrentPage((page) => page - 1)}
+  >
+    Previous
+  </button>
+
+  <span>
+    Page {currentPage} of {Math.max(1, Math.ceil(documents.length / pageSize))}
+  </span>
+
+  <button
+    className="secondary-button"
+    disabled={currentPage >= Math.ceil(documents.length / pageSize)}
+    onClick={() => setCurrentPage((page) => page + 1)}
+  >
+    Next
+  </button>
+</div>
+               </>
                 )}
               </section>
             </>
