@@ -20,7 +20,11 @@ from src.api.text_documents import router as text_documents_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # A FastAPI lifespan handler replaces deprecated startup event handlers.
+    # Initialize both persistence layers and run their required migrations.
     init_db()
+    migrate_document_schema()
+    init_admin_tables()
     initialize_database()
     migrate_document_schema()
     init_admin_tables()
@@ -34,6 +38,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+<<<<<<< HEAD
+=======
+# Allow the React frontend to call the backend.
+>>>>>>> origin/main
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -56,6 +64,11 @@ app.add_middleware(
     ],
 )
 
+<<<<<<< HEAD
+=======
+
+# Register each API router once.
+>>>>>>> origin/main
 app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(search_router)
