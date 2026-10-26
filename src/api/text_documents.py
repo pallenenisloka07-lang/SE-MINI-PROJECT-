@@ -14,10 +14,10 @@ from src.services.document_service import (
     process_document,
     list_user_documents,
     get_user_document,
+    get_download_info,
     delete_user_document,
-    edit_user_document,
+    edit_text_document,
 )
-
 router = APIRouter(prefix="/api/text-documents", tags=["Text Documents"])
 
 
@@ -46,22 +46,47 @@ def resolve_owner(db: Session, account: dict) -> User:
     return owner
 
 
-def public_text_document(item: dict) -> dict:
+def public_text_document(item: dict, owner_id: int) -> dict:
+    content = item.get("extracted_text") or ""
+
+    if not content:
+        try:
+            path, filename = get_download_info(owner_id, item["id"])
+            if filename.lower().endswith(".txt"):
+                content = path.read_text(encoding="utf-8-sig")
+        except (FileNotFoundError, OSError):
+            content = ""
+
     return {
         "id": item["id"],
         "title": item.get("title", ""),
-        "content": item.get("extracted_text", ""),
+        "content": content,
     }
-
 
 @router.get("")
 def list_text_documents(
+    search: str = "",
     account: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     owner = resolve_owner(db, account)
     result = list_user_documents(owner.id)
-    return [public_text_document(item) for item in result["items"]]
+
+    documents = [
+        public_text_document(item, owner.id)
+        for item in result["items"]
+    ]
+
+    search_term = search.strip().casefold()
+    if search_term:
+        documents = [
+            document
+            for document in documents
+            if search_term in document["title"].casefold()
+        ]
+
+    return documents
+
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
