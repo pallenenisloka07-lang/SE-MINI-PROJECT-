@@ -1,6 +1,13 @@
+from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.app.database.init_db import initialize_database
 from src.api.auth import router as auth_router
 from src.api.documents import router as documents_router
 from src.api.search import router as search_router
@@ -11,12 +18,23 @@ from src.repositories.document_repository import migrate_document_schema
 from src.repositories.admin_repository import init_admin_tables
 
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    initialize_database()
+    yield
+
+
 app = FastAPI(
     title="AI-CMS API",
     description="AI-Powered Content Management System",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
+app.include_router(auth_router)
+app.include_router(documents_router)
 
 # Allow the React frontend to call the backend.
 app.add_middleware(
@@ -58,7 +76,4 @@ app.include_router(admin_router)
 
 @app.get("/health")
 def health_check():
-    return {
-        "status": "healthy",
-        "service": "AI-CMS backend",
-    }
+    return {"status": "healthy", "service": "AI-CMS backend"}

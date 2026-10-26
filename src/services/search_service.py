@@ -201,6 +201,9 @@ def semantic_search(
     for match in passages:
         metadata = match["metadata"]
         document_id = int(metadata["document_id"])
+        service_document_id = int(
+            metadata.get("service_document_id", document_id)
+        )
 
         # Chroma cosine distance = 1 - cosine similarity.
         similarity = 1.0 - match["distance"]
@@ -213,7 +216,7 @@ def semantic_search(
         if relevance < minimum:
             continue
 
-        document = get_document(document_id, owner_id)
+        document = get_document(service_document_id, owner_id)
 
         if not document:
             continue
@@ -233,6 +236,7 @@ def semantic_search(
                 "relevance": relevance,
                 "document": document,
                 "passage": match["passage"],
+                "public_document_id": document_id,
             }
 
     ranked = sorted(
@@ -241,13 +245,14 @@ def semantic_search(
         reverse=True,
     )
 
-    results = [
-        _public_result(
+    results = []
+    for item in ranked:
+        result = _public_result(
             item["document"],
             _snippet(item["passage"]),
             item["relevance"],
         )
-        for item in ranked
-    ]
+        result["id"] = item["public_document_id"]
+        results.append(result)
 
     return _paginate(results, page)

@@ -34,6 +34,7 @@ def index_document_passages(
     file_type,
     passages,
     embeddings,
+    service_document_id=None,
 ):
     """Replace a document's existing vectors with its latest passages."""
     if len(passages) != len(embeddings):
@@ -53,6 +54,11 @@ def index_document_passages(
         {
             "owner_id": str(owner_id),
             "document_id": str(document_id),
+            "service_document_id": str(
+                service_document_id
+                if service_document_id is not None
+                else document_id
+            ),
             "passage_index": i,
             "file_type": file_type.lower(),
         }

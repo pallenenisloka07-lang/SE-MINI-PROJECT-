@@ -5,6 +5,10 @@ email-validator
 bcrypt
 python-jose[cryptography]
 httpx
+
+python-dotenv
+
+python-multipart
 python-multipart
 pypdf
 python-docx
