@@ -1,9 +1,11 @@
 
 from backend.app.database.connection import SessionLocal
+from backend.app.database.init_db import initialize_database
 from backend.app.models.models import User
 
 
 def test_database_operations():
+    initialize_database()
     db = SessionLocal()
     test_email = "database_test@example.com"
 

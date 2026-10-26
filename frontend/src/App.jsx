@@ -137,7 +137,7 @@ function App() {
       const query = keyword.trim()
         ? `?search=${encodeURIComponent(keyword.trim())}`
         : ''
-      const data = await apiRequest(`/api/documents${query}`)
+      const data = await apiRequest(`/api/text-documents${query}`)
       setDocuments(data)
     } catch (err) {
       setDashboardError(true)
@@ -181,9 +181,8 @@ function App() {
     try {
       const isEditing = editingId !== null
       const path = isEditing
-        ? `/api/documents/${editingId}`
-        : '/api/documents'
-
+  ? `/api/text-documents/${editingId}`
+  : '/api/text-documents'
       await apiRequest(path, {
         method: isEditing ? 'PUT' : 'POST',
         body: JSON.stringify({ title, content }),
@@ -211,7 +210,7 @@ function App() {
     setDashboardError(false)
 
     try {
-      await apiRequest(`/api/documents/${document.id}`, {
+     await apiRequest(`/api/text-documents/${document.id}`, {
         method: 'DELETE',
       })
       setDashboardMessage('Document deleted.')
