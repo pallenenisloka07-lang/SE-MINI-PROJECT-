@@ -566,9 +566,23 @@ async function downloadFile(file) {
             <h3>
               {result.title || result.original_filename || 'Untitled document'}
             </h3>
-            <p>
-              {result.extracted_text || result.content || 'No preview available.'}
-            </p>
+           
+<p>
+  File type: {(result.file_type || 'Unknown').toUpperCase()}
+</p>
+<p>Category: {result.category || 'Uncategorized'}</p>
+<p>
+  Uploaded: {result.uploaded_at
+    ? new Date(result.uploaded_at).toLocaleDateString()
+    : 'Date unavailable'}
+</p>
+<p>
+  {result.extracted_text ||
+    result.content ||
+    result.summary ||
+    'Document found by semantic search.'}
+</p>
+
           </div>
         </article>
       ))}
