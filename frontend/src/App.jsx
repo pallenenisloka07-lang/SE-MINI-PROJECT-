@@ -9,11 +9,13 @@ async function apiRequest(path, options = {}) {
 
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
+   headers: {
+  ...(options.body instanceof FormData
+    ? {}
+    : { 'Content-Type': 'application/json' }),
+  ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  ...options.headers,
+},
   })
 
   if (response.status === 204) return null
@@ -54,7 +56,11 @@ function App() {
   const [dashboardMessage, setDashboardMessage] = useState('')
   const [dashboardError, setDashboardError] = useState(false)
   const [saving, setSaving] = useState(false)
-
+  const [uploadedFiles, setUploadedFiles] = useState([])
+  const [uploading, setUploading] = useState(false)
+  const [fileTitle, setFileTitle] = useState('')
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [showFiles, setShowFiles] = useState(false)
   function changePage(nextPage) {
     setPage(nextPage)
     setUsername('')
@@ -149,6 +155,81 @@ function App() {
       setDocumentsLoading(false)
     }
   }
+  async function loadUploadedFiles() {
+  try {
+    const data = await apiRequest('/api/documents')
+    setUploadedFiles(data.items || [])
+  } catch (err) {
+    setDashboardError(true)
+    setDashboardMessage(err.message)
+    if (err.message.includes('session expired')) logout()
+  }
+}
+
+async function uploadFile(event) {
+  event.preventDefault()
+
+  if (!selectedFile) {
+    setDashboardError(true)
+    setDashboardMessage('Please choose a file first.')
+    return
+  }
+
+  const formData = new FormData()
+  formData.append('file', selectedFile)
+
+  if (fileTitle.trim()) {
+    formData.append('title', fileTitle.trim())
+  }
+
+  setUploading(true)
+  setDashboardMessage('')
+  setDashboardError(false)
+
+  try {
+    await apiRequest('/api/documents', {
+      method: 'POST',
+      body: formData,
+    })
+
+    setSelectedFile(null)
+    setFileTitle('')
+    event.target.reset()
+
+    setDashboardMessage('File uploaded successfully.')
+    await loadUploadedFiles()
+  } catch (err) {
+    setDashboardError(true)
+    setDashboardMessage(err.message)
+  } finally {
+    setUploading(false)
+  }
+}
+
+async function downloadFile(file) {
+  try {
+    const token = sessionStorage.getItem('access_token')
+    const response = await fetch(
+      `${API_URL}/api/documents/${file.id}/download`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+    )
+
+    if (!response.ok) {
+      throw new Error('Unable to download this file.')
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = file.original_filename || file.title
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    setDashboardError(true)
+    setDashboardMessage(err.message)
+  }
+}
 
   useEffect(() => {
     if (loggedIn) loadDocuments()
@@ -245,14 +326,28 @@ function App() {
           </div>
 
           <p className="sidebar-label">WORKSPACE</p>
-          <button className="sidebar-link active" onClick={() => {
+          <button className={`sidebar-link ${!editorOpen && !showFiles ? 'active' : ''}`} onClick={() => {
             setEditorOpen(false)
+            setShowFiles(false)
             loadDocuments()
           }}>
             <span>▦</span> Dashboard
           </button>
-          <button className="sidebar-link" onClick={openNewDocument}>
+          <button className={`sidebar-link ${editorOpen ? 'active' : ''}`} onClick={() => {
+            setShowFiles(false)
+            openNewDocument()
+          }}>
             <span>＋</span> New document
+          </button>
+          <button
+            className={`sidebar-link ${showFiles ? 'active' : ''}`}
+            onClick={() => {
+              setEditorOpen(false)
+              setShowFiles(true)
+              loadUploadedFiles()
+            }}
+          >
+            <span>📁</span> Files
           </button>
 
           <div className="sidebar-bottom">
@@ -295,7 +390,7 @@ function App() {
             </p>
           )}
 
-          {editorOpen ? (
+        {editorOpen ? (
             <section className="content-panel">
               <form className="document-form" onSubmit={saveDocument}>
                 <label htmlFor="document-title">Document title</label>
@@ -329,9 +424,68 @@ function App() {
                 </div>
               </form>
             </section>
-          ) : (
-            <>
-              <section className="stats-grid">
+                 ) : showFiles ? (
+          <section className="content-panel">
+            <h2>Upload files</h2>
+            <p>Upload PDF, DOCX, or TXT documents.</p>
+
+            <form onSubmit={uploadFile} className="document-form">
+              <label htmlFor="file-title">Document title (optional)</label>
+              <input
+                id="file-title"
+                value={fileTitle}
+                onChange={(event) => setFileTitle(event.target.value)}
+                placeholder="Enter a title"
+              />
+
+              <label htmlFor="file-upload">Choose a file</label>
+              <input
+                id="file-upload"
+                type="file"
+                accept=".pdf,.docx,.txt"
+                onChange={(event) =>
+                  setSelectedFile(event.target.files?.[0] || null)
+                }
+                required
+              />
+
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={uploading}
+              >
+                {uploading ? 'Uploading...' : 'Upload file'}
+              </button>
+            </form>
+
+            <h2>Uploaded files</h2>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={loadUploadedFiles}
+            >
+              Refresh files
+            </button>
+
+            {uploadedFiles.map((file) => (
+              <article className="document-item" key={file.id}>
+                <h3>{file.title}</h3>
+                <p>Status: {file.processing_status || file.status || 'Unknown'}</p>
+                <p>Keywords: {(file.keywords || []).join(', ') || 'Not available'}</p>
+                <p>Topics: {(file.topics || []).join(', ') || 'Not available'}</p>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => downloadFile(file)}
+                >
+                  Download
+                </button>
+              </article>
+            ))}
+          </section>
+        ) : (
+          <>
+            <section className="stats-grid">
                 <div className="stat-card">
                   <div className="stat-icon purple">▤</div>
                   <span>Total documents</span>
