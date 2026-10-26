@@ -89,19 +89,22 @@ def _public_document(document):
     result = dict(document)
 
     try:
-        result["keywords"] = json.loads(result.get("keywords_json") or "[]")
+        result["keywords"] = json.loads(
+            result.get("keywords_json") or "[]"
+        )
     except (ValueError, TypeError):
         result["keywords"] = []
 
     try:
-        result["topics"] = json.loads(result.get("topics_json") or "[]")
+        result["topics"] = json.loads(
+            result.get("topics_json") or "[]"
+        )
     except (ValueError, TypeError):
         result["topics"] = []
 
     for field in (
         "storage_path",
         "owner_id",
-        "extracted_text",
         "keywords_json",
         "topics_json",
     ):
