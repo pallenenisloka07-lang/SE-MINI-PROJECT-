@@ -1,96 +1,108 @@
 
+import os
 import sqlite3
+from pathlib import Path
+
+
+DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "documents.db"
 
 
 class DocumentManager:
-    def __init__(self, db_path="documents.db"):
-        self.db_path = db_path
+    def __init__(self, db_path=None):
+        self.db_path = str(db_path or os.getenv("DOCUMENTS_DB_PATH", DEFAULT_DB_PATH))
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Create the documents table and close the connection.
-        db = self._connect()
-        try:
+        with self._connect() as db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_id INTEGER NOT NULL,
                     title TEXT NOT NULL,
                     content TEXT NOT NULL
                 )
             """)
-            db.commit()
-        finally:
-            db.close()
+            columns = {
+                row[1] for row in db.execute("PRAGMA table_info(documents)")
+            }
+            if "owner_id" not in columns:
+                # Preserve any pre-existing documents but keep them private
+                # until they are explicitly assigned to a user.
+                db.execute(
+                    "ALTER TABLE documents ADD COLUMN owner_id INTEGER"
+                )
 
     def _connect(self):
-        return sqlite3.connect(self.db_path)
+        db = sqlite3.connect(self.db_path)
+        db.row_factory = sqlite3.Row
+        return db
 
-    def _run(self, query, params=(), fetch=False):
-        """Execute a query and always close the database connection."""
-        db = self._connect()
-        try:
-            cursor = db.execute(query, params)
+    @staticmethod
+    def _document(row):
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "content": row["content"],
+        }
 
-            if fetch:
-                return cursor.fetchall()
+    @staticmethod
+    def _validate(title, content):
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("Title is required")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Content is required")
 
-            db.commit()
-            return cursor.rowcount, cursor.lastrowid
-        finally:
-            db.close()
+    def add(self, owner_id, title, content):
+        self._validate(title, content)
+        with self._connect() as db:
+            cursor = db.execute(
+                """INSERT INTO documents (owner_id, title, content)
+                   VALUES (?, ?, ?)""",
+                (owner_id, title.strip(), content.strip()),
+            )
+            return cursor.lastrowid
 
-    def add(self, title, content):
-        """Add a document and return its ID."""
-        if not title.strip() or not content.strip():
-            raise ValueError("Title and content are required")
+    def view_all(self, owner_id):
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT id, title, content FROM documents
+                   WHERE owner_id = ? ORDER BY id DESC""",
+                (owner_id,),
+            ).fetchall()
+            return [self._document(row) for row in rows]
 
-        _, doc_id = self._run(
-            "INSERT INTO documents (title, content) VALUES (?, ?)",
-            (title.strip(), content.strip())
-        )
-        return doc_id
+    def get(self, owner_id, doc_id):
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT id, title, content FROM documents
+                   WHERE owner_id = ? AND id = ?""",
+                (owner_id, doc_id),
+            ).fetchone()
+            return self._document(row) if row else None
 
-    def view_all(self):
-        """Return all documents."""
-        rows = self._run(
-            "SELECT id, title, content FROM documents ORDER BY id",
-            fetch=True
-        )
-        return [
-            {"id": row[0], "title": row[1], "content": row[2]}
-            for row in rows
-        ]
+    def search(self, owner_id, keyword):
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT id, title, content FROM documents
+                   WHERE owner_id = ? AND title LIKE ?
+                   ORDER BY id DESC""",
+                (owner_id, f"%{keyword}%"),
+            ).fetchall()
+            return [self._document(row) for row in rows]
 
-    def search(self, keyword):
-        """Search documents by title."""
-        rows = self._run(
-            """SELECT id, title, content
-               FROM documents
-               WHERE title LIKE ?
-               ORDER BY id""",
-            (f"%{keyword}%",),
-            fetch=True
-        )
-        return [
-            {"id": row[0], "title": row[1], "content": row[2]}
-            for row in rows
-        ]
+    def edit(self, owner_id, doc_id, title, content):
+        self._validate(title, content)
+        with self._connect() as db:
+            cursor = db.execute(
+                """UPDATE documents SET title = ?, content = ?
+                   WHERE owner_id = ? AND id = ?""",
+                (title.strip(), content.strip(), owner_id, doc_id),
+            )
+            return cursor.rowcount > 0
 
-    def edit(self, doc_id, title, content):
-        """Update a document. Return True if it exists."""
-        if not title.strip() or not content.strip():
-            raise ValueError("Title and content are required")
-
-        count, _ = self._run(
-            """UPDATE documents
-               SET title = ?, content = ?
-               WHERE id = ?""",
-            (title.strip(), content.strip(), doc_id)
-        )
-        return count > 0
-
-    def delete(self, doc_id):
-        """Delete a document. Return True if it exists."""
-        count, _ = self._run(
-            "DELETE FROM documents WHERE id = ?",
-            (doc_id,)
-        )
-        return count > 0
+    def delete(self, owner_id, doc_id):
+        with self._connect() as db:
+            cursor = db.execute(
+                "DELETE FROM documents WHERE owner_id = ? AND id = ?",
+                (owner_id, doc_id),
+            )
+            return cursor.rowcount > 0

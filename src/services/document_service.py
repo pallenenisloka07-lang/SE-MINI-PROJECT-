@@ -335,6 +335,62 @@ def edit_user_document(owner_id, document_id, updates):
     return _public_document(document)
 
 
+def edit_text_document(owner_id, document_id, title, content):
+    """Update a plain-text document and rebuild its processing/index data."""
+    document = get_document(document_id, owner_id)
+    if document is None:
+        raise FileNotFoundError("Document not found")
+
+    if document["file_type"].lower() != "txt":
+        raise ValueError("Only plain-text documents can be edited this way")
+
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Document content cannot be empty")
+
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("Document title cannot be empty")
+
+    if len(title.strip()) > 255:
+        raise ValueError("Title must not exceed 255 characters")
+
+    content_bytes = content.encode("utf-8")
+    if len(content_bytes) > MAX_FILE_SIZE:
+        raise ValueError("The text document must not exceed 10 MB")
+
+    path = Path(document["storage_path"])
+    if not path.is_file():
+        raise FileNotFoundError("Stored document file is missing")
+
+    # Replace the stored content and update the title.
+    path.write_bytes(content_bytes)
+    updated = update_document(
+        document_id,
+        owner_id,
+        {"title": title.strip()},
+    )
+    if updated is None:
+        raise FileNotFoundError("Document not found")
+
+    # Keep file metadata consistent with the new content.
+    from src.repositories.document_repository import _update_processing_fields
+
+    _update_processing_fields(
+        document_id,
+        owner_id,
+        {
+            "size_bytes": len(content_bytes),
+            "processing_status": "Uploaded",
+            "processing_error": None,
+        },
+    )
+
+    # Rebuild the search index from the updated text.
+    delete_document_index(document_id, owner_id)
+    process_document(document_id, owner_id)
+
+    return get_user_document(owner_id, document_id)
+
+
 def delete_user_document(owner_id, document_id):
     document = get_document(document_id, owner_id)
     if document is None:
