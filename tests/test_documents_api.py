@@ -55,7 +55,7 @@ def test_document_lifecycle():
     # List
     response = client.get("/api/documents", headers=headers)
     assert response.status_code == 200, response.text
-    assert any(item["id"] == doc_id for item in response.json())
+    assert any(item["id"] == doc_id for item in response.json()["items"])
 
     # Details
     response = client.get(f"/api/documents/{doc_id}", headers=headers)
