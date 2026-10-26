@@ -21,7 +21,11 @@ from src.repositories.admin_repository import init_admin_tables
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # A FastAPI lifespan handler replaces deprecated startup event handlers.
+    # Initialize both persistence layers and run their required migrations.
     init_db()
+    migrate_document_schema()
+    init_admin_tables()
     initialize_database()
     yield
 
@@ -32,9 +36,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
-app.include_router(auth_router)
-app.include_router(documents_router)
 
 # Allow the React frontend to call the backend.
 app.add_middleware(
@@ -59,15 +60,7 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def startup():
-    # Initialize database tables before applying schema migrations.
-    init_db()
-    migrate_document_schema()
-    init_admin_tables()
-
-
-# Register all API routers.
+# Register each API router once.
 app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(search_router)
