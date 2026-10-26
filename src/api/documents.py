@@ -36,8 +36,30 @@ from src.services.document_service import (
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
 
+def account_identity_id(account: dict) -> int:
+    value = account.get("id")
+    if value is None:
+        value = account.get("sub")
+    if value is None:
+        value = account.get("user_id")
+
+    if value is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authenticated user ID is missing",
+        )
+
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="Authenticated user ID is invalid",
+        ) from exc
+
+
 def document_owner(db: Session, account: dict) -> User:
-    account_id = account["id"]
+    account_id = account_identity_id(account)
     username = str(account.get("username") or f"user_{account_id}")
     raw_email = account.get("email")
     email = str(raw_email).strip().lower() if raw_email else None
@@ -130,7 +152,7 @@ def document_json(document: Document) -> dict:
 
 
 def find_service_document(account: dict, document: Document) -> dict | None:
-    service_result = list_user_documents(account["id"])
+    service_result = list_user_documents(account_identity_id(account))
     matches = [
         item
         for item in service_result["items"]
@@ -152,7 +174,7 @@ def add_service_metadata(
         return result
 
     try:
-        details = get_user_document(account["id"], service_doc["id"])
+        details = get_user_document(account_identity_id(account), service_doc["id"])
     except FileNotFoundError:
         return result
 
@@ -222,7 +244,7 @@ async def upload_document(
         db.refresh(document)
 
         service_doc = service_upload_document(
-            owner_id=account["id"],
+            owner_id=account_identity_id(account),
             filename=filename,
             content=content,
             title=document.title,
@@ -230,12 +252,12 @@ async def upload_document(
 
         process_document(
             document_id=service_doc["id"],
-            owner_id=account["id"],
+            owner_id=account_identity_id(account),
             index_document_id=document.id,
         )
 
         record_audit_event(
-            user_id=account.get("id"),
+            user_id=account_identity_id(account),
             username=account.get("username", ""),
             action="document_upload",
             details=f"Document {document.id} uploaded",
@@ -277,7 +299,7 @@ def list_documents(
         .all()
     )
 
-    service_result = list_user_documents(account["id"])
+    service_result = list_user_documents(account_identity_id(account))
     service_by_key = {}
     for item in service_result["items"]:
         key = (item.get("original_filename"), item.get("title"))
@@ -323,7 +345,7 @@ def reprocess_document(
 
     try:
         queue_reprocessing(
-            owner_id=account["id"],
+            owner_id=account_identity_id(account),
             document_id=service_doc["id"],
             index_document_id=document.id,
         )
@@ -334,7 +356,7 @@ def reprocess_document(
 
     process_document(
         document_id=service_doc["id"],
-        owner_id=account["id"],
+        owner_id=account_identity_id(account),
         index_document_id=document.id,
     )
 
@@ -445,11 +467,11 @@ def update_document(
         service_doc = find_service_document(account, document)
         if service_doc is not None:
             service_details = get_user_document(
-                account["id"], service_doc["id"]
+                account_identity_id(account), service_doc["id"]
             )
             save_analysis_results(
                 document_id=service_doc["id"],
-                owner_id=account["id"],
+                owner_id=account_identity_id(account),
                 category=changes["category"].strip(),
                 confidence=float(
                     service_details.get(
@@ -480,7 +502,7 @@ def remove_document(
     delete_file(storage_path)
 
     record_audit_event(
-        user_id=account.get("id"),
+        user_id=account_identity_id(account),
         username=account.get("username", ""),
         action="document_delete",
         details=f"Document {document_id} deleted",
