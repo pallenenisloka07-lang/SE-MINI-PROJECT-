@@ -37,18 +37,40 @@ router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
 
 def document_owner(db: Session, account: dict) -> User:
-    email = account["email"].strip().lower()
-    owner = db.query(User).filter(User.email == email).first()
-    if owner:
-        return owner
+    account_id = account["id"]
+    username = str(account.get("username") or f"user_{account_id}")
+    raw_email = account.get("email")
+    email = str(raw_email).strip().lower() if raw_email else None
 
-    username = account["username"]
-    if db.query(User).filter(User.username == username).first():
-        username = f"{username}_{account['id']}"
+    # Use email when authentication provides it.
+    if email:
+        owner = db.query(User).filter(User.email == email).first()
+        if owner:
+            return owner
+    else:
+        # Some authentication tokens contain username and ID, but no email.
+        # Reuse the existing local document owner when possible.
+        owner = db.query(User).filter(User.username == username).first()
+        if owner:
+            return owner
+
+        # Supply a stable fallback address for the local database record.
+        email = f"user_{account_id}@local.invalid"
+
+    existing_username = (
+        db.query(User).filter(User.username == username).first()
+    )
+    if existing_username:
+        username = f"{username}_{account_id}"
+
+    existing_email = db.query(User).filter(User.email == email).first()
+    if existing_email:
+        return existing_email
 
     role = (
         "admin"
-        if account.get("role", "").lower() in {"admin", "administrator"}
+        if str(account.get("role", "")).lower()
+        in {"admin", "administrator"}
         else "user"
     )
     owner = User(
@@ -61,7 +83,6 @@ def document_owner(db: Session, account: dict) -> User:
     db.commit()
     db.refresh(owner)
     return owner
-
 
 def owned_document(db: Session, doc_id: int, owner_id: int) -> Document:
     document = (
