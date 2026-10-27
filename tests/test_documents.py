@@ -1,7 +1,9 @@
-
 import os
 import unittest
 import uuid
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 os.environ.setdefault(
     "JWT_SECRET_KEY",
@@ -10,6 +12,7 @@ os.environ.setdefault(
 
 from fastapi.testclient import TestClient
 from src.main import app
+from src.services import document_service
 
 
 class TestDocumentAPI(unittest.TestCase):
@@ -171,6 +174,61 @@ class TestDocumentAPI(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 404, response.text)
+
+    def test_file_removal_failure_preserves_database_record(self):
+        with TemporaryDirectory() as temp_dir:
+            stored_file = Path(temp_dir) / "sample.txt"
+            stored_file.write_text("sample", encoding="utf-8")
+            document = {
+                "id": 123,
+                "owner_id": 456,
+                "storage_path": str(stored_file),
+            }
+
+            with patch(
+                "src.services.document_service.get_document",
+                return_value=document,
+            ), patch(
+                "src.services.document_service.Path.unlink",
+                side_effect=PermissionError("File is locked"),
+            ), patch(
+                "src.services.document_service.delete_document_index"
+            ) as delete_index, patch(
+                "src.services.document_service.delete_document"
+            ) as delete_record:
+                with self.assertRaises(RuntimeError):
+                    document_service.delete_user_document("456", 123)
+
+            delete_index.assert_not_called()
+            delete_record.assert_not_called()
+            self.assertTrue(stored_file.exists())
+
+    def test_vector_cleanup_failure_does_not_delete_database_record(self):
+        with TemporaryDirectory() as temp_dir:
+            stored_file = Path(temp_dir) / "sample.txt"
+            stored_file.write_text("sample", encoding="utf-8")
+            document = {
+                "id": 123,
+                "owner_id": 456,
+                "storage_path": str(stored_file),
+            }
+
+            with patch(
+                "src.services.document_service.get_document",
+                return_value=document,
+            ), patch(
+                "src.services.document_service.delete_document_index",
+                side_effect=RuntimeError("Vector store unavailable"),
+            ), patch(
+                "src.services.document_service.delete_document"
+            ) as delete_record:
+                with self.assertRaises(RuntimeError):
+                    document_service.delete_user_document("456", 123)
+
+            delete_record.assert_not_called()
+            # Current implementation removes the file before vector cleanup.
+            # This test records current behavior; cleanup is not atomic.
+            self.assertFalse(stored_file.exists())
 
 
 if __name__ == "__main__":
