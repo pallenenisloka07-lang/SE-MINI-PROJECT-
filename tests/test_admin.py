@@ -1,4 +1,3 @@
-
 import unittest
 import uuid
 
@@ -13,7 +12,10 @@ from src.repositories.admin_repository import (
     delete_category,
 )
 
-from src.repositories.document_repository import Document
+from src.repositories.document_repository import (
+    Document,
+    save_analysis_results,
+)
 
 from src.repositories.user_repository import (
     SessionLocal,
@@ -339,6 +341,88 @@ class TestAdminAPI(unittest.TestCase):
             # Remove the category if an earlier assertion failed.
             if category_id is not None:
                 delete_category(category_id)
+
+    def test_manual_category_is_preserved_during_ai_analysis(self):
+        suffix = uuid.uuid4().hex[:8]
+        username = f"manual_cat_{suffix}"
+
+        owner = create_user(
+            username,
+            f"{username}@example.com",
+            "test-password-hash",
+        )
+
+        owner_id = owner["id"]
+        document_id = None
+
+        try:
+            # 1. Create a document with a manually selected category.
+            with SessionLocal() as db:
+                document = Document(
+                    owner_id=owner_id,
+                    title="Manual category test",
+                    original_filename="manual_test.txt",
+                    storage_path="manual_test.txt",
+                    file_type="txt",
+                    size_bytes=10,
+                    category="My Manual Category",
+                    category_confidence=1.0,
+                    category_is_manual=True,
+                    processing_status="Processed",
+                )
+
+                db.add(document)
+                db.commit()
+                db.refresh(document)
+
+                document_id = document.id
+
+            # 2. Simulate AI analysis suggesting a different category.
+            result = save_analysis_results(
+                document_id=document_id,
+                owner_id=owner_id,
+                category="AI Suggested Category",
+                confidence=0.75,
+                keywords=["test"],
+                topics=["testing"],
+            )
+
+            # 3. Verify that the manually chosen category is preserved.
+            self.assertIsNotNone(result)
+            self.assertEqual(
+                result["category"], "My Manual Category"
+            )
+            self.assertEqual(
+                result["category_confidence"], 1.0
+            )
+
+            # 4. Verify the values persisted in the database.
+            with SessionLocal() as db:
+                updated = db.get(Document, document_id)
+
+                self.assertIsNotNone(updated)
+                self.assertEqual(
+                    updated.category, "My Manual Category"
+                )
+                self.assertTrue(updated.category_is_manual)
+
+        finally:
+            # Clean up the test document and test user.
+            with SessionLocal() as db:
+                if document_id is not None:
+                    document = db.get(
+                        Document, document_id
+                    )
+
+                    if document is not None:
+                        db.delete(document)
+
+                test_owner = db.get(User, owner_id)
+
+                if test_owner is not None:
+                    db.delete(test_owner)
+
+                db.commit()
 
 
 if __name__ == "__main__":
