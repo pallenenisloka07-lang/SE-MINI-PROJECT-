@@ -165,7 +165,7 @@ const [semanticResults, setSemanticResults] = useState([])
     }
   }
 
-  
+
 
 
 async function semanticSearch(query) {
@@ -575,7 +575,7 @@ function openDocumentPreview(document) {
       required
       aria-label="Semantic search query"
     />
-    
+
 <select
   value={semanticCategory}
   onChange={(event) => setSemanticCategory(event.target.value)}
@@ -609,7 +609,7 @@ function openDocumentPreview(document) {
             <h3>
               {result.title || result.original_filename || 'Untitled document'}
             </h3>
-           
+
 <p>
   File type: {(result.file_type || 'Unknown').toUpperCase()}
 </p>
@@ -678,7 +678,7 @@ function openDocumentPreview(document) {
                   </div>
                 ) : (
                   <>
-                  
+
 <div className="document-toolbar">
   <label htmlFor="document-sort">Sort documents:</label>
   <select
@@ -731,7 +731,7 @@ function openDocumentPreview(document) {
                       </article>
                     ))}
                   </div>
-                  
+
 <div className="pagination-controls">
   <button
     className="secondary-button"

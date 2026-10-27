@@ -150,7 +150,7 @@ def update_text_document(
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Document not found") from exc
 
-    
+
     try:
         saved = edit_text_document(
             owner.id,

@@ -18,11 +18,8 @@ from src.repositories.document_repository import migrate_document_schema
 from src.repositories.admin_repository import init_admin_tables
 
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # A FastAPI lifespan handler replaces deprecated startup event handlers.
-    # Initialize both persistence layers and run their required migrations.
     init_db()
     migrate_document_schema()
     init_admin_tables()
@@ -37,7 +34,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow the React frontend to call the backend.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -45,22 +41,10 @@ app.add_middleware(
         "http://127.0.0.1:5173",
     ],
     allow_credentials=False,
-    allow_methods=[
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "OPTIONS",
-    ],
-    allow_headers=[
-        "Content-Type",
-        "Authorization",
-    ],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
 
-
-# Register each API router once.
 app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(search_router)
@@ -69,4 +53,7 @@ app.include_router(admin_router)
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "service": "AI-CMS backend"}
+    return {
+        "status": "healthy",
+        "service": "AI-CMS backend",
+    }
