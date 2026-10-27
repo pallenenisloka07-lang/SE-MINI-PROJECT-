@@ -1,3 +1,4 @@
+
 import os
 import unittest
 import uuid
@@ -160,6 +161,16 @@ class TestDocumentAPI(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(details.status_code, 404)
+
+    def test_delete_missing_document_returns_404(self):
+        headers = self.create_user()
+
+        response = self.client.delete(
+            "/api/documents/999999999",
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 404, response.text)
 
 
 if __name__ == "__main__":
