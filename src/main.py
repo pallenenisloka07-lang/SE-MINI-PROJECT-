@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from src.api.auth import router as auth_router
+from backend.app.api_documents import router as documents_router
 from src.repositories.user_repository import init_db
 
 app = FastAPI(
@@ -16,6 +17,7 @@ def startup():
 
 
 app.include_router(auth_router)
+app.include_router(documents_router)
 
 
 @app.get("/health")
