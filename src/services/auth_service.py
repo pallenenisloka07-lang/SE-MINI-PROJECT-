@@ -1,16 +1,19 @@
-
 import os
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 from jose import jwt
+from jose.exceptions import JWTError
 from sqlalchemy.exc import IntegrityError
 
 from src.repositories.user_repository import (
     create_user,
     find_user_by_username,
     find_user_by_email,
+    revoke_token,
+    is_token_revoked,
 )
 
 
@@ -55,7 +58,7 @@ def register_user(username, email, password):
 def login_user(username, password):
     user = find_user_by_username(username.strip())
 
-    if not user or not bcrypt.checkpw(
+    if not user or not user.is_active or not bcrypt.checkpw(
         password.encode("utf-8"),
         user.password_hash.encode("utf-8"),
     ):
@@ -73,6 +76,7 @@ def login_user(username, password):
         "sub": str(user.id),
         "username": user.username,
         "role": user.role,
+        "jti": uuid.uuid4().hex,
         "iat": now,
         "exp": now + timedelta(minutes=30),
     }
@@ -85,3 +89,50 @@ def login_user(username, password):
         "expires_in": 1800,
         "role": user.role,
     }
+
+
+def decode_access_token(token):
+    """Validate a JWT and reject tokens that have been revoked."""
+    secret = os.getenv("JWT_SECRET_KEY")
+    if not secret:
+        raise RuntimeError(
+            "JWT_SECRET_KEY environment variable is not configured"
+        )
+
+    try:
+        payload = jwt.decode(
+            token,
+            secret,
+            algorithms=["HS256"],
+        )
+    except JWTError as exc:
+        raise PermissionError(
+            "Invalid or expired access token"
+        ) from exc
+
+    jti = payload.get("jti")
+    if not jti:
+        raise PermissionError("Invalid access token")
+
+    if is_token_revoked(jti):
+        raise PermissionError("Access token has been revoked")
+
+    return payload
+
+
+def logout_user(token):
+    """Revoke a valid token so it cannot be reused after logout."""
+    payload = decode_access_token(token)
+
+    jti = payload.get("jti")
+    expires_at = payload.get("exp")
+
+    if not jti or expires_at is None:
+        raise PermissionError("Invalid access token")
+
+    expiry_datetime = datetime.fromtimestamp(
+        float(expires_at),
+        tz=timezone.utc,
+    )
+
+    revoke_token(jti, expiry_datetime)

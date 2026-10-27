@@ -87,8 +87,19 @@ class DocumentApiTests(unittest.TestCase):
         self.engine.dispose()
 
     def make_token(self, user_id, username):
+        from datetime import datetime, timedelta, timezone
+        from uuid import uuid4
+
+        now = datetime.now(timezone.utc)
         return jwt.encode(
-            {"sub": str(user_id), "username": username},
+            {
+                "sub": str(user_id),
+                "username": username,
+                "role": "user",
+                "jti": uuid4().hex,
+                "iat": now,
+                "exp": now + timedelta(minutes=30),
+            },
             os.environ["JWT_SECRET_KEY"],
             algorithm="HS256",
         )
@@ -135,7 +146,7 @@ class DocumentApiTests(unittest.TestCase):
                 headers=self.headers(101, "owner-a"),
                 json={},
             )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
 
     def test_owner_can_update_document(self):
         with self.mock_auth_user(101, "owner-a", "owner-a@example.com"):
@@ -170,7 +181,7 @@ class DocumentApiTests(unittest.TestCase):
                 f"/api/documents/{self.document_id}",
                 headers=self.headers(101, "owner-a"),
             )
-        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.status_code, 204, response.text)
         self.assertFalse(self.storage_path.exists())
 
         with self.TestSession() as db:

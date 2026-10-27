@@ -5,3 +5,14 @@ email-validator
 bcrypt
 python-jose[cryptography]
 httpx
+
+python-dotenv
+
+python-multipart
+pypdf
+python-docx
+sentence-transformers
+chromadb
+scikit-learn
+pytest
+pytest-cov
