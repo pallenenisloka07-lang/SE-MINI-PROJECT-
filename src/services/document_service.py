@@ -442,36 +442,59 @@ def delete_user_document(owner_id, document_id):
         raise FileNotFoundError("Document not found")
 
     stored_path = Path(document["storage_path"])
+    backup_path = None
 
-    # Remove the file first so a file-system error does not happen
-    # after the database record has already been deleted.
+    # Temporarily move the file so it can be restored if cleanup fails.
     try:
-        stored_path.unlink(missing_ok=True)
+        if stored_path.exists():
+            backup_path = stored_path.with_name(
+                f".{stored_path.name}.deleting-{document_id}"
+            )
+            stored_path.replace(backup_path)
     except OSError as exc:
         logger.exception(
-            "Stored-file cleanup failed for document %s",
+            "Could not prepare document file for deletion: %s",
             document_id,
         )
         raise RuntimeError(
             "Could not delete the stored document file"
         ) from exc
 
-    # Remove the vector index before deleting the database record.
     try:
         delete_document_index(document_id, owner_id)
+
+        deleted = delete_document(document_id, owner_id)
+        if deleted is None:
+            raise FileNotFoundError("Document not found")
+
     except Exception as exc:
+        if backup_path is not None and backup_path.exists():
+            try:
+                backup_path.replace(stored_path)
+            except OSError:
+                logger.exception(
+                    "Could not restore document file: %s",
+                    document_id,
+                )
+
         logger.exception(
-            "Vector cleanup failed for document %s",
+            "Document deletion failed: %s",
             document_id,
         )
         raise RuntimeError(
-            "Stored file was deleted, but vector cleanup failed"
+            "Could not complete document deletion"
         ) from exc
 
-    deleted = delete_document(document_id, owner_id)
+    if backup_path is not None:
+        try:
+            backup_path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception(
+                "Could not remove temporary file for document %s",
+                document_id,
+            )
 
-    if deleted is None:
-        raise FileNotFoundError("Document not found")
+    return deleted
 
 
 def queue_reprocessing(owner_id, document_id):

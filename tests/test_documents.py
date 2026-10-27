@@ -1,3 +1,4 @@
+
 import os
 import unittest
 import uuid
@@ -189,7 +190,7 @@ class TestDocumentAPI(unittest.TestCase):
                 "src.services.document_service.get_document",
                 return_value=document,
             ), patch(
-                "src.services.document_service.Path.unlink",
+                "src.services.document_service.Path.replace",
                 side_effect=PermissionError("File is locked"),
             ), patch(
                 "src.services.document_service.delete_document_index"
@@ -226,9 +227,9 @@ class TestDocumentAPI(unittest.TestCase):
                     document_service.delete_user_document("456", 123)
 
             delete_record.assert_not_called()
-            # Current implementation removes the file before vector cleanup.
-            # This test records current behavior; cleanup is not atomic.
-            self.assertFalse(stored_file.exists())
+
+            # The original file is restored when vector cleanup fails.
+            self.assertTrue(stored_file.exists())
 
 
 if __name__ == "__main__":
