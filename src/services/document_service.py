@@ -443,16 +443,8 @@ def delete_user_document(owner_id, document_id):
 
     stored_path = Path(document["storage_path"])
 
-    # Remove vectors first. If this fails, the database record
-    # remains available rather than pretending deletion succeeded.
-    delete_document_index(document_id, owner_id)
-
-    deleted = delete_document(document_id, owner_id)
-
-    if deleted is None:
-        raise FileNotFoundError("Document not found")
-
-    # Remove the stored file and report any cleanup failure.
+    # Remove the file first so a file-system error does not happen
+    # after the database record has already been deleted.
     try:
         stored_path.unlink(missing_ok=True)
     except OSError as exc:
@@ -461,8 +453,25 @@ def delete_user_document(owner_id, document_id):
             document_id,
         )
         raise RuntimeError(
-            "Document record was deleted, but stored-file cleanup failed"
+            "Could not delete the stored document file"
         ) from exc
+
+    # Remove the vector index before deleting the database record.
+    try:
+        delete_document_index(document_id, owner_id)
+    except Exception as exc:
+        logger.exception(
+            "Vector cleanup failed for document %s",
+            document_id,
+        )
+        raise RuntimeError(
+            "Stored file was deleted, but vector cleanup failed"
+        ) from exc
+
+    deleted = delete_document(document_id, owner_id)
+
+    if deleted is None:
+        raise FileNotFoundError("Document not found")
 
 
 def queue_reprocessing(owner_id, document_id):
