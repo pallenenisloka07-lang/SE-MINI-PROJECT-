@@ -1,8 +1,10 @@
+
 import os
 import unittest
 import uuid
+import asyncio
 from unittest.mock import patch
-from src.main import recover_interrupted_documents
+
 os.environ.setdefault(
     "JWT_SECRET_KEY",
     "local-test-secret-key-change-before-deployment",
@@ -11,12 +13,13 @@ os.environ.setdefault(
 from fastapi.testclient import TestClient
 from jose import jwt
 
-from src.main import app
+from src.main import app, recover_interrupted_documents
 from src.services.vector_store_service import _collection
+
 
 class TestDocumentReprocessing(unittest.TestCase):
 
-        def test_recovery_resets_and_processes_interrupted_document(self):
+    def test_recovery_resets_and_processes_interrupted_document(self):
         document = {
             "id": 987654,
             "owner_id": 123,
@@ -31,12 +34,12 @@ class TestDocumentReprocessing(unittest.TestCase):
         ) as mark_uploaded, patch(
             "src.main.process_document",
         ) as process:
-            import asyncio
             asyncio.run(recover_interrupted_documents())
 
         mark_uploaded.assert_called_once_with(987654, 123)
         process.assert_called_once_with(987654, 123)
-        def setUp(self):
+
+    def setUp(self):
         self.client_context = TestClient(app)
         self.client = self.client_context.__enter__()
 
@@ -149,25 +152,20 @@ class TestDocumentReprocessing(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.text)
-
         document = response.json()
 
         self.assertEqual(
             document["processing_status"],
             "Processed",
         )
-
         self.assertGreater(self.get_index_count(), 0)
-
         self.assertIn("keywords", document)
         self.assertIn("topics", document)
-
         self.assertLessEqual(len(document["keywords"]), 10)
         self.assertLessEqual(len(document["topics"]), 3)
 
     def test_reprocessing_does_not_duplicate_vectors(self):
         document_id = self.upload_document()
-
         before = self.get_index_count()
         self.assertGreater(before, 0)
 
@@ -192,14 +190,12 @@ class TestDocumentReprocessing(unittest.TestCase):
             200,
             details.text,
         )
-
         self.assertEqual(
             details.json()["processing_status"],
             "Processed",
         )
 
         after = self.get_index_count()
-
         self.assertEqual(
             after,
             before,
@@ -218,11 +214,11 @@ class TestDocumentReprocessing(unittest.TestCase):
             document_id,
             self.owner_id,
         )
+
         self.assertIsNotNone(updated)
         self.assertEqual(updated["processing_status"], "Processing")
 
         interrupted = list_processing_documents()
-
         recovered_candidate_ids = {
             str(document["id"]) for document in interrupted
         }
