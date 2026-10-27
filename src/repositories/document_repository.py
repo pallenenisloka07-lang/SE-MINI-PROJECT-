@@ -327,3 +327,13 @@ def delete_document(document_id, owner_id):
         db.commit()
 
         return result
+
+def list_processing_documents():
+    """Find documents interrupted while processing."""
+    with SessionLocal() as db:
+        documents = (
+            db.query(Document)
+            .filter(Document.processing_status == "Processing")
+            .all()
+        )
+        return [_document_dict(document) for document in documents]

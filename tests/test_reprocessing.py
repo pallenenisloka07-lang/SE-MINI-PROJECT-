@@ -13,7 +13,6 @@ from jose import jwt
 from src.main import app
 from src.services.vector_store_service import _collection
 
-
 class TestDocumentReprocessing(unittest.TestCase):
 
     def setUp(self):
@@ -184,6 +183,33 @@ class TestDocumentReprocessing(unittest.TestCase):
             after,
             before,
             "Reprocessing should not leave duplicate vector entries.",
+        )
+
+    def test_interrupted_document_is_found_for_recovery(self):
+        from src.repositories.document_repository import (
+            mark_document_processing,
+            list_processing_documents,
+        )
+
+        document_id = self.upload_document()
+
+        updated = mark_document_processing(
+            document_id,
+            self.owner_id,
+        )
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated["processing_status"], "Processing")
+
+        interrupted = list_processing_documents()
+
+        recovered_candidate_ids = {
+            str(document["id"]) for document in interrupted
+        }
+
+        self.assertIn(
+            str(document_id),
+            recovered_candidate_ids,
+            "A document left in Processing should be detected at startup.",
         )
 
     def test_another_user_cannot_reprocess_document(self):

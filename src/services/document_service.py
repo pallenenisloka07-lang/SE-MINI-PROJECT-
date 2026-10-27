@@ -435,32 +435,34 @@ def edit_user_document(owner_id, document_id, updates):
 
 
 def delete_user_document(owner_id, document_id):
-    """Delete the document, its vector index and stored file."""
-    document = get_document(
-        document_id,
-        owner_id,
-    )
+    """Delete a document and clean up its related data."""
+    document = get_document(document_id, owner_id)
 
     if document is None:
         raise FileNotFoundError("Document not found")
 
-    # Remove indexed passages before deleting the database record.
-    delete_document_index(
-        document_id,
-        owner_id,
-    )
+    stored_path = Path(document["storage_path"])
 
-    deleted = delete_document(
-        document_id,
-        owner_id,
-    )
+    # Remove vectors first. If this fails, the database record
+    # remains available rather than pretending deletion succeeded.
+    delete_document_index(document_id, owner_id)
+
+    deleted = delete_document(document_id, owner_id)
 
     if deleted is None:
         raise FileNotFoundError("Document not found")
 
-    Path(document["storage_path"]).unlink(
-        missing_ok=True
-    )
+    # Remove the stored file and report any cleanup failure.
+    try:
+        stored_path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.exception(
+            "Stored-file cleanup failed for document %s",
+            document_id,
+        )
+        raise RuntimeError(
+            "Document record was deleted, but stored-file cleanup failed"
+        ) from exc
 
 
 def queue_reprocessing(owner_id, document_id):
