@@ -1,0 +1,58 @@
+# Deploy the backend only after the existing CI workflow passes on main.
+# Configure a Render web service (linked to main, auto-deploy disabled)
+# and set the RENDER_DEPLOY_HOOK_URL GitHub Actions secret first.
+name: CD - Deploy backend
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-backend-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Request Render deployment
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Trigger deployment of the tested commit
+        shell: bash
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          TESTED_COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [[ -z "$RENDER_DEPLOY_HOOK_URL" ]]; then
+            echo "::error::Set the RENDER_DEPLOY_HOOK_URL GitHub Actions secret first."
+            exit 1
+          fi
+          if [[ -z "$TESTED_COMMIT" ]]; then
+            echo "::error::Missing CI commit SHA."
+            exit 1
+          fi
+
+          # Render hooks may already contain query parameters.
+          delimiter='?'
+          if [[ "$RENDER_DEPLOY_HOOK_URL" == *\?* ]]; then
+            delimiter='&'
+          fi
+
+          curl --fail-with-body --silent --show-error \
+            --max-time 60 --request POST \
+            "${RENDER_DEPLOY_HOOK_URL}${delimiter}ref=${TESTED_COMMIT}"
+
+          echo "Render accepted the deployment request for ${TESTED_COMMIT}."
+          echo "Confirm deployment succeeds in the Render dashboard and check /health."
