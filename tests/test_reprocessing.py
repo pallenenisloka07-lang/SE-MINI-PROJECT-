@@ -1,7 +1,8 @@
 import os
 import unittest
 import uuid
-
+from unittest.mock import patch
+from src.main import recover_interrupted_documents
 os.environ.setdefault(
     "JWT_SECRET_KEY",
     "local-test-secret-key-change-before-deployment",
@@ -15,7 +16,27 @@ from src.services.vector_store_service import _collection
 
 class TestDocumentReprocessing(unittest.TestCase):
 
-    def setUp(self):
+        def test_recovery_resets_and_processes_interrupted_document(self):
+        document = {
+            "id": 987654,
+            "owner_id": 123,
+        }
+
+        with patch(
+            "src.main.list_processing_documents",
+            return_value=[document],
+        ), patch(
+            "src.main.mark_document_uploaded",
+            return_value={"id": 987654},
+        ) as mark_uploaded, patch(
+            "src.main.process_document",
+        ) as process:
+            import asyncio
+            asyncio.run(recover_interrupted_documents())
+
+        mark_uploaded.assert_called_once_with(987654, 123)
+        process.assert_called_once_with(987654, 123)
+        def setUp(self):
         self.client_context = TestClient(app)
         self.client = self.client_context.__enter__()
 
